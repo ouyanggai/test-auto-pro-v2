@@ -1,8 +1,8 @@
 # F-049 视觉与实现规格（可直接照做）
 
-- 状态：随 F-049 为 awaiting_approval，尚未实施。
+- 状态：随 F-049 为 implementing；2026-10-15 用户已明确批准实施。
 - 作用：[F-049](F-049-futuristic-skins-and-ui-polish.md) 说"做什么、怎么验收"，本文件说"每个像素、每个文件怎么做"。数值、变量名、文件名都已定死；实施者不需要再做审美判断，只需照表落地并按文末测试验证。
-- 与 ARCHITECTURE 的分工：技术边界以 [ARCHITECTURE.md F-049 章节](../ARCHITECTURE.md#f-049-主题与界面边界待批准) 为准，本文是其具体化；冲突时以 ARCHITECTURE 为准并回头改本文。
+- 与 ARCHITECTURE 的分工：技术边界以 [ARCHITECTURE.md F-049 章节](../ARCHITECTURE.md#f-049-主题与界面边界) 为准，本文是其具体化；冲突时以 ARCHITECTURE 为准并回头改本文。
 
 ## 0. 方案评审结论
 

@@ -7,5 +7,7 @@ import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
 import './styles.css'
+import './styles/layout.css'
+import './styles/skins.css'
 
 createApp(App).use(createPinia()).use(router).mount('#app')

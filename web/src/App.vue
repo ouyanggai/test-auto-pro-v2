@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { computed, h, ref } from 'vue'
+import { computed, h, ref, watch } from 'vue'
 import { NButton, NConfigProvider, NGlobalStyle, NLayout, NLayoutContent, NLayoutHeader, NLayoutSider, NMenu, NMessageProvider, NNotificationProvider, darkTheme, dateZhCN, zhCN } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
 import { useAppStore } from './stores/app'
+import { buildThemeOverrides } from './appearance/naiveTheme'
+import { applyAppearance } from './appearance/applyAppearance'
+import AppearanceMenu from './components/AppearanceMenu.vue'
+import AmbientLayer from './components/AmbientLayer.vue'
 
 const route = useRoute()
 const appStore = useAppStore()
@@ -27,12 +31,15 @@ const selectedKey = computed(() => {
 // 把顶栏以下的高度整块交给流程图（页面自己管纵向分区）。
 const flushContent = computed(() => /^\/runs\/[^/]+\/paths\/[^/]+$/.test(route.path))
 const naiveTheme = computed(() => (appStore.themeMode === 'dark' ? darkTheme : null))
+const themeOverrides = computed(() => buildThemeOverrides(appStore.skinId, appStore.themeMode))
+watch([() => appStore.skinId, () => appStore.themeMode], ([skin, mode]) => applyAppearance(skin, mode), { immediate: true })
 const themeToggleLabel = computed(() => (appStore.themeMode === 'dark' ? '切换为浅色主题' : '切换为深色主题'))
 const sidebarCollapsed = ref(false)
 </script>
 
 <template>
-  <n-config-provider :theme="naiveTheme" :locale="zhCN" :date-locale="dateZhCN">
+  <n-config-provider :theme="naiveTheme" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
+    <AmbientLayer />
     <n-message-provider>
       <n-notification-provider>
         <n-global-style />
@@ -43,6 +50,7 @@ const sidebarCollapsed = ref(false)
                  页面内不再重复一条页头，操作区因此能拿到更多横向空间。 -->
             <div id="app-header-context" class="header-context" />
             <div class="header-toolbar">
+              <AppearanceMenu />
               <n-button
                 quaternary
                 size="small"

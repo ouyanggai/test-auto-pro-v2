@@ -1,0 +1,5 @@
+/* 氛围层独立于业务布局，固定节点只通过皮肤选择器显隐。 */
+.app-ambient { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; contain: strict; }
+.app-ambient > i { position: absolute; display: block; pointer-events: none; }
+html[data-skin="default"] .app-ambient { display: none; }
+.app-shell { position: relative; z-index: 1; }

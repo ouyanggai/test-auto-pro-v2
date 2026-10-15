@@ -1,26 +1,25 @@
 import { defineStore } from 'pinia'
-
-export type ThemeMode = 'light' | 'dark'
-
-const themeStorageKey = 'test-auto-pro-theme'
-
-function loadThemeMode(): ThemeMode {
-  if (typeof window === 'undefined') {
-    return 'light'
-  }
-
-  return window.localStorage.getItem(themeStorageKey) === 'dark' ? 'dark' : 'light'
-}
+import { browserStorage, readSkinId, readThemeMode, skinStorageKey, themeStorageKey, writePreference } from '../appearance/preferences'
+import type { SkinId, ThemeMode } from '../appearance/skins'
+export type { SkinId, ThemeMode } from '../appearance/skins'
 
 export const useAppStore = defineStore('app', {
   state: () => ({
     productName: '流程自动化测试平台',
-    themeMode: loadThemeMode() as ThemeMode,
+    themeMode: readThemeMode(browserStorage()),
+    skinId: readSkinId(browserStorage()),
   }),
   actions: {
     toggleThemeMode() {
-      this.themeMode = this.themeMode === 'light' ? 'dark' : 'light'
-      window.localStorage.setItem(themeStorageKey, this.themeMode)
+      this.setThemeMode(this.themeMode === 'light' ? 'dark' : 'light')
+    },
+    setThemeMode(mode: ThemeMode) {
+      this.themeMode = mode
+      writePreference(themeStorageKey, mode)
+    },
+    setSkinId(id: SkinId) {
+      this.skinId = id
+      writePreference(skinStorageKey, id)
     },
   },
 })

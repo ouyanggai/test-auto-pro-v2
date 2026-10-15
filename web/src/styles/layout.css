@@ -1,0 +1,9 @@
+/* 首屏兜底：应用尚未挂载时与令牌表底色一致。 */
+html[data-mode="dark"] { background: #101014; }
+html[data-mode="light"] { background: #ffffff; }
+html[data-skin="deep-space"][data-mode="dark"] { background: #060b1a; }
+html[data-skin="deep-space"][data-mode="light"] { background: #edf2fa; }
+html[data-skin="aurora"][data-mode="dark"] { background: #061513; }
+html[data-skin="aurora"][data-mode="light"] { background: #eaf8f4; }
+html[data-skin="titanium"][data-mode="dark"] { background: #0e1013; }
+html[data-skin="titanium"][data-mode="light"] { background: #e6e9ed; }
