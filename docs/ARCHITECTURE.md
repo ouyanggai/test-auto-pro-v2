@@ -92,6 +92,9 @@ F-030 只在现有执行器、会话协调器、目标传输日志和运行详�
 
 - 在现有 `web/src/stores/app.ts` 中增加 `SkinId = default | deep-space | aurora | titanium`，使用独立的浏览器存储键 `test-auto-pro-skin`；缺省为 `default`。继续沿用现有 `ThemeMode = light | dark` 和 `test-auto-pro-theme`，不把皮肤与深浅偏好合并成八个存储值。
 - 复用现有 `NConfigProvider`、`NGlobalStyle`、`darkTheme` 与全局样式。统一表面、文字、边框、状态、阴影、圆角和间距变量；主题标识与工具变量放到文档根节点，使 Teleport 到 body 的弹窗、下拉和提示也能取到。无新增后端配置、主题接口或 UI 库。
+- 令牌表（`web/src/appearance/skins.ts`）是唯一的颜色来源，同时产出三份结果：Naive `themeOverrides`、`<html>` 上的 `data-skin`/`data-mode` 与 CSS 变量、图表 option 基础配置。CSS 文件不写色值（首屏兜底底色除外）。默认皮肤不写 `themeOverrides`，令牌取自 Naive 自身的 light/dark 公共值并由测试对照。新皮肤的半透明色只允许出现在 `Layout.headerColor/siderColor` 与 `Card.color`，`Layout.color` 清空以显示氛围层。
+- 补齐源码已在使用但从未定义的全局变量（`--text-color-1/2/3`、`--divider-color`、`--card-color`、`--primary-color`、`--font-family-mono` 等），并以全局变量取代各弹窗内由 `useThemeVars()` 注入的局部颜色；弹窗尺寸改为统一类 `app-dialog--sm/md/lg`。首屏由 `index.html` 内联脚本先写 `data-skin`/`data-mode`，避免闪白。
+- 氛围层是 `AmbientLayer` 内的固定 DOM，与业务状态零耦合；持续动画仅用 `transform`/`opacity`，同屏 `backdrop-filter` 元素不超过 6 个且不用于表格、日志、代码。指针光晕只写一个元素的 `transform`，不写 CSS 变量。具体数值见 [F-049 视觉与实现规格](features/F-049-visual-spec.md)。
 - F-000 的扁平应用壳和当前配色保留为默认皮肤基础；F-049 的三套新皮肤允许渐变、玻璃、金属层次、阴影和装饰。默认皮肤也整理排版与弹窗，但不套用新皮肤的强氛围效果。
 - 间距采用 `4/8/12/16/24/32/48px`，普通页面水平留白随桌面宽度在 `24—48px` 调整；运行详情保留画布优先的 flush 工作台。根节点最小宽度仍为 1024px，不新增移动端布局。
 - 统一现有弹窗的宽高与间距：小型确认 480px、普通编辑及动作详情 760px、大型明细 960px，均受视口可用宽高约束；正文独立滚动，有操作的弹窗底部稳定可见。保留现有开关、关闭限制、加载门禁、确认回调和层级关系。
