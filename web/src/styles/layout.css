@@ -7,3 +7,65 @@ html[data-skin="aurora"][data-mode="dark"] { background: #061513; }
 html[data-skin="aurora"][data-mode="light"] { background: #eaf8f4; }
 html[data-skin="titanium"][data-mode="dark"] { background: #0e1013; }
 html[data-skin="titanium"][data-mode="light"] { background: #e6e9ed; }
+
+/* 页面只在这里管理外层留白；运行工作台继续把整块空间交给画布。 */
+.app-main > .n-layout-scroll-container { padding: var(--app-content-pad-top) var(--app-content-pad-x) var(--app-content-pad-bottom); }
+.app-main--flush > .n-layout-scroll-container { padding: 0; }
+body { font-size: 14px; line-height: 22px; }
+.header-toolbar { gap: 8px; }
+.app-shell .app-main h1 { margin: 0 0 24px; font-size: 24px; line-height: 32px; font-weight: 600; color: var(--text-color-1); }
+/* 配置工作台的身份行是工具栏，维持紧凑高度，避免挤压下方表单与画布。 */
+.app-shell .app-main .path-configuration-page__identity h1 { margin: 0; font-size: 17px; line-height: 24px; }
+.app-main :is(table, .n-data-table) { font-variant-numeric: tabular-nums; background-color: var(--ta-reading); }
+.app-shell .app-main :is(th, td) { padding: 10px 12px; }
+.app-shell .app-main th { height: 44px; color: var(--text-color-2); font-size: 12px; font-weight: 600; background: var(--ta-surface-2); }
+.app-main tbody tr:hover > td { background-color: var(--table-color-hover); }
+.app-main :is(.n-pagination, [class$="__pagination"]) { justify-content: flex-end; margin-top: 16px; }
+.app-main :is(.n-card, .setting-card) { border-radius: var(--ta-radius-card); }
+.app-main .n-card--small-size { --n-padding-top: 16px; --n-padding-bottom: 16px; --n-padding-left: 16px; }
+.app-main :is(.n-empty, .app-empty-state) { padding-block: 48px; color: var(--text-color-3); }
+.n-tag { font-size: 12px; border-radius: var(--ta-radius-control); }
+.appearance-popover.n-popover { padding: 16px; }
+
+/* 尺寸类作用于真实卡片，不依赖被传送出去后失效的 scoped 祖先选择器。 */
+.app-dialog.n-card, .app-dialog.n-dialog {
+  width: min(var(--dialog-w, 760px), calc(100vw - 48px));
+  max-width: calc(100vw - 48px);
+  max-height: calc(100dvh - 96px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.app-dialog--sm { --dialog-w: 480px; }
+.app-dialog--md { --dialog-w: 760px; }
+.app-dialog--lg { --dialog-w: 960px; }
+.app-dialog.n-card > .n-card-header { flex: none; padding: 20px 24px 16px; border-bottom: 1px solid var(--divider-color); }
+.app-dialog.n-card > .n-card__content { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 20px 24px; }
+.app-dialog.n-card > .n-card__footer { flex: none; padding: 16px 24px; border-top: 1px solid var(--divider-color); }
+.app-dialog.n-card > .n-card__action { flex: none; padding: 16px 24px; border-top: 1px solid var(--divider-color); background: var(--ta-surface-2); }
+.app-dialog.n-dialog { padding: 0; }
+.app-dialog.n-dialog > .n-dialog__title { flex: none; padding: 20px 48px 16px 24px; border-bottom: 1px solid var(--divider-color); }
+.app-dialog.n-dialog > .n-dialog__content { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 20px 24px; margin: 0; }
+.app-dialog.n-dialog > .n-dialog__action { flex: none; padding: 16px 24px; border-top: 1px solid var(--divider-color); }
+.app-dialog :is(pre, .run-panel__target-message, .run-panel__req-result) {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.app-dialog pre {
+  padding: 12px;
+  font-family: var(--font-family-mono);
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--ta-reading);
+  border: 1px solid var(--divider-color);
+  border-radius: var(--ta-radius-control);
+}
+.app-dialog :is(.run-panel__facts dd, .run-panel__req-path, .action-flow__step) { min-width: 0; overflow-wrap: anywhere; }
+.app-dialog :is(.run-panel__mono, .run-panel__summary-time, .run-panel__req-num) { font-variant-numeric: tabular-nums; }
+
+/* 滚动条不占额外布局空间，浮层和正文共用同一主题。 */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text-color-3) 45%, transparent) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { border-radius: 4px; background: color-mix(in srgb, var(--text-color-3) 45%, transparent); }
+::-webkit-scrollbar-track { background: transparent; }

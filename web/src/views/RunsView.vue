@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NButton, NCheckbox, NPagination, NPopconfirm, NSelect, NSpin, useThemeVars } from 'naive-ui'
+import { NButton, NCheckbox, NPagination, NPopconfirm, NSelect, NSpin } from 'naive-ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -10,7 +10,6 @@ import type { RunSummary } from '../features/runs/api'
 // RunsView 是运行记录列表：一行只对应一次计划运行（跨计划）。
 // 每行显示计划、运行方式、整体状态、路径汇总、开始/结束时间，并提供进入与删除入口（2026-09-06）。
 const router = useRouter()
-const themeVars = useThemeVars()
 const runs = ref<RunSummary[]>([])
 const loading = ref(false)
 const errorText = ref('')
@@ -302,11 +301,11 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
 
 .runs-view__status-select { width: 160px; }
 .runs-view__check-col { width: 40px; text-align: center; }
-.runs-view__error { color: var(--error-color, #d03050); }
+.runs-view__error { color: var(--error-color); }
 .runs-view__loading { display: flex; gap: 10px; align-items: center; opacity: 0.8; }
 
 .runs-view__table {
-  border: 1px solid v-bind('themeVars.dividerColor');
+  border: 1px solid var(--divider-color);
   border-collapse: collapse;
 }
 
@@ -314,7 +313,7 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
 .runs-view__table td {
   padding: 8px 12px;
   text-align: left;
-  border-bottom: 1px solid v-bind('themeVars.dividerColor');
+  border-bottom: 1px solid var(--divider-color);
 }
 
 .runs-view__plan { font-weight: 500; }

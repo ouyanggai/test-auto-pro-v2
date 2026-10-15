@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NButton, NEmpty, NPagination, NPopconfirm, NResult, NSpin, NTag, useThemeVars } from 'naive-ui'
+import { NButton, NEmpty, NPagination, NPopconfirm, NResult, NSpin, NTag } from 'naive-ui'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -11,7 +11,6 @@ import type { RunPathProgress, RunPathsView } from '../features/runs/api'
 // 进度来自已落库步骤与本次运行冻结的总步骤，完成才是 100%，失败或停止保留实际进度。
 const route = useRoute()
 const router = useRouter()
-const themeVars = useThemeVars()
 const runId = String(route.params.runId || '')
 
 const view = ref<RunPathsView | null>(null)
@@ -316,7 +315,7 @@ onBeforeUnmount(() => {
   opacity: 0.75;
 }
 
-.run-paths__error { margin: 0; color: var(--error-color, #d03050); }
+.run-paths__error { margin: 0; color: var(--error-color); }
 
 .run-paths__result-actions {
   display: flex;
@@ -351,18 +350,18 @@ onBeforeUnmount(() => {
   text-align: left;
   cursor: pointer;
   background: transparent;
-  border: 1px solid v-bind('themeVars.dividerColor');
+  border: 1px solid var(--divider-color);
   border-radius: 8px;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .run-paths__card:hover {
-  border-color: v-bind('themeVars.primaryColor');
-  box-shadow: 0 2px 12px rgb(0 0 0 / 8%);
+  border-color: var(--primary-color);
+  box-shadow: var(--ta-shadow-1);
 }
 
 .run-paths__card:focus-visible {
-  outline: 2px solid v-bind('themeVars.primaryColor');
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
 }
 
@@ -388,13 +387,13 @@ onBeforeUnmount(() => {
 .run-paths__progress {
   height: 6px;
   overflow: hidden;
-  background: color-mix(in srgb, v-bind('themeVars.dividerColor') 55%, transparent);
+  background: color-mix(in srgb, var(--divider-color) 55%, transparent);
   border-radius: 3px;
 }
 
 .run-paths__progress-bar {
   height: 100%;
-  background: v-bind('themeVars.primaryColor');
+  background: var(--primary-color);
   border-radius: 3px;
   transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;

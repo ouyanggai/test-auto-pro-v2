@@ -159,14 +159,14 @@ onBeforeUnmount(() => {
 <style scoped>
 .runtime-maintenance { display: grid; gap: 16px; padding: 24px; }
 .back-nav { margin-bottom: 8px; }
-.back-btn { padding-left: 0; color: var(--n-text-color-2); font-weight: 500; transition: all 0.2s ease; }
-.back-btn:hover { color: var(--n-primary-color); transform: translateX(-2px); }
+.back-btn { padding-left: 0; color: var(--text-color-2); font-weight: 500; transition: all 0.2s ease; }
+.back-btn:hover { color: var(--primary-color); transform: translateX(-2px); }
 .runtime-maintenance__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .runtime-maintenance__header h1 { margin: 6px 0 4px; }
-.runtime-maintenance__header p { margin: 0; color: var(--n-text-color-3); }
+.runtime-maintenance__header p { margin: 0; color: var(--text-color-3); }
 .runtime-maintenance__grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-bottom: 16px; }
 .runtime-maintenance__job > div { display: flex; align-items: center; gap: 10px; }
-.runtime-maintenance__failure { color: var(--n-error-color); }
+.runtime-maintenance__failure { color: var(--error-color); }
 code { word-break: break-all; }
 @media (max-width: 760px) { .runtime-maintenance__grid { grid-template-columns: 1fr; } .runtime-maintenance__header { flex-direction: column; } }
 </style>

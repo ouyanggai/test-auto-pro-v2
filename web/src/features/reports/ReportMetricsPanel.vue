@@ -4,6 +4,9 @@ import { computed } from 'vue'
 
 import ReportChart from './ReportChart.vue'
 import TermHint from './TermHint.vue'
+import { chartBaseOption, statusPalette } from './chartTheme'
+import { skinTokens } from '../../appearance/skins'
+import { useAppStore } from '../../stores/app'
 import { distributionRows, formatCount, formatMs, formatPercent, latencyText, ratioText } from './api'
 import type { LatencyStats, ReportMetrics } from './api'
 
@@ -13,15 +16,10 @@ import type { LatencyStats, ReportMetrics } from './api'
 // L1/L2 不再复用本组件，改用 ReportMetricSummary，避免三级重复同一套面板。
 const props = defineProps<{ metrics: ReportMetrics }>()
 
-// 图表配色：与产品浅/深主题解耦，用固定语义色（成功=绿、失败=红、其余=中性）保证可读。
-const resultColors: Record<string, string> = {
-  成功: '#18a058',
-  失败: '#d03050',
-  已停止: '#f0a020',
-  已取消: '#909399',
-  结果待确认: '#2080f0',
-}
-const failurePalette = ['#d03050', '#f0a020', '#7c3aed', '#2080f0', '#909399']
+const appStore = useAppStore()
+const tokens = computed(() => skinTokens[appStore.skinId][appStore.themeMode])
+const resultColors = computed(() => statusPalette(tokens.value))
+const failurePalette = computed(() => [tokens.value.error, tokens.value.warning, tokens.value.accent2, tokens.value.info, tokens.value.text3])
 
 // hasResults / hasFailures 决定是否渲染饼图；空数据改用文字状态，不渲染空图。
 const hasResults = computed(() => Object.keys(props.metrics.resultDistribution || {}).length > 0)
@@ -31,11 +29,13 @@ const failureRows = computed(() => distributionRows(props.metrics.failureClasses
 
 // buildLatencyOption 生成单口径时延分位柱状图配置（P50/P90/P95/均值）。
 function buildLatencyOption(stats: LatencyStats, color: string): Record<string, unknown> {
+  const base = chartBaseOption(tokens.value)
   return {
-    tooltip: { trigger: 'axis', valueFormatter: (value: number) => formatMs(value) },
+    ...base,
+    tooltip: { ...base.tooltip, trigger: 'axis', valueFormatter: (value: number) => formatMs(value) },
     grid: { left: 48, right: 16, top: 24, bottom: 28 },
-    xAxis: { type: 'category', data: ['P50', 'P90', 'P95', '均值'] },
-    yAxis: { type: 'value', axisLabel: { formatter: (value: number) => formatMs(value) } },
+    xAxis: { ...base.xAxis, type: 'category', data: ['P50', 'P90', 'P95', '均值'] },
+    yAxis: { ...base.yAxis, type: 'value', axisLabel: { ...base.yAxis.axisLabel, formatter: (value: number) => formatMs(value) } },
     series: [{
       type: 'bar',
       barWidth: '52%',
@@ -47,28 +47,32 @@ function buildLatencyOption(stats: LatencyStats, color: string): Record<string, 
 
 // buildPieOption 生成结果/分类占比环形图配置；颜色按语义映射，未知分类回落到调色板。
 function buildPieOption(distribution: Record<string, number>, colorFor: (label: string, index: number) => string): Record<string, unknown> {
+  // 环形图不添加坐标轴；只取公共文字、图例与提示样式，避免出现多余坐标轴。
+  const base = chartBaseOption(tokens.value)
   const data = Object.entries(distribution).map(([name, value], index) => ({
     name,
     value,
     itemStyle: { color: colorFor(name, index) },
   }))
   return {
-    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { bottom: 0, type: 'scroll' },
+    color: base.color,
+    textStyle: base.textStyle,
+    tooltip: { ...base.tooltip, trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+    legend: { ...base.legend, bottom: 0, type: 'scroll' },
     series: [{
       type: 'pie',
       radius: ['40%', '68%'],
       center: ['50%', '44%'],
-      label: { formatter: '{b} {c}' },
+      label: { formatter: '{b} {c}', color: tokens.value.text2 },
       data,
     }],
   }
 }
 
-const stepLatencyOption = computed(() => buildLatencyOption(props.metrics.stepLatencyMs, '#2080f0'))
-const interfaceLatencyOption = computed(() => buildLatencyOption(props.metrics.interfaceLatencyMs, '#18a058'))
-const resultPieOption = computed(() => buildPieOption(props.metrics.resultDistribution || {}, (label, index) => resultColors[label] || failurePalette[index % failurePalette.length]))
-const failurePieOption = computed(() => buildPieOption(props.metrics.failureClasses || {}, (_, index) => failurePalette[index % failurePalette.length]))
+const stepLatencyOption = computed(() => buildLatencyOption(props.metrics.stepLatencyMs, tokens.value.info))
+const interfaceLatencyOption = computed(() => buildLatencyOption(props.metrics.interfaceLatencyMs, tokens.value.success))
+const resultPieOption = computed(() => buildPieOption(props.metrics.resultDistribution || {}, (label, index) => resultColors.value[label] || failurePalette.value[index % failurePalette.value.length]!))
+const failurePieOption = computed(() => buildPieOption(props.metrics.failureClasses || {}, (_, index) => failurePalette.value[index % failurePalette.value.length]!))
 </script>
 
 <template>
@@ -189,7 +193,7 @@ const failurePieOption = computed(() => buildPieOption(props.metrics.failureClas
   gap: 12px;
 }
 .kpi__label { margin: 0; color: var(--text-color-3); font-size: 13px; }
-.kpi__value { margin: 6px 0; font-size: 20px; font-weight: 600; color: var(--text-color-1); }
+.kpi__value { margin: 8px 0; font-size: 28px; line-height: 36px; font-weight: 600; letter-spacing: -.01em; font-variant-numeric: tabular-nums; color: var(--text-color-1); overflow-wrap: anywhere; }
 .kpi__hint { margin: 0; color: var(--text-color-3); font-size: 12px; line-height: 1.6; }
 .metrics-panel__latency,
 .metrics-panel__dist {
@@ -211,7 +215,7 @@ const failurePieOption = computed(() => buildPieOption(props.metrics.failureClas
 .detail-table__num {
   text-align: right;
   font-variant-numeric: tabular-nums;
-  font-family: var(--font-family-mono, monospace);
+  font-family: var(--font-family-mono);
 }
-.metrics-panel__capped { margin: 0; color: var(--warning-color, #f0a020); font-size: 12px; }
+.metrics-panel__capped { margin: 0; color: var(--warning-color); font-size: 12px; }
 </style>

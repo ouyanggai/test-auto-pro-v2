@@ -12,7 +12,6 @@ import {
   NSpace,
   NSpin,
   NTag,
-  useThemeVars,
 } from 'naive-ui'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
@@ -35,7 +34,6 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ 'update:show': [value: boolean], saved: [source: HistoryDataSource] }>()
 
-const themeVars = useThemeVars()
 const pageState = ref<HistoryCandidatePage | null>(null)
 const loading = ref(false)
 const saving = ref(false)
@@ -53,12 +51,6 @@ const currentSource = computed(() => props.scope === 'path'
   : pageState.value?.defaultSource)
 const candidates = computed(() => pageState.value?.items ?? [])
 const pageCount = computed(() => Math.max(1, Math.ceil((pageState.value?.total ?? 0) / (pageState.value?.pageSize ?? 20))))
-const pickerStyle = computed(() => ({
-  '--picker-border-color': themeVars.value.borderColor,
-  '--picker-active-color': themeVars.value.primaryColor,
-  '--picker-secondary-text-color': themeVars.value.textColor3,
-  '--picker-notice-color': themeVars.value.warningColor,
-}))
 
 // loadCandidates 读取可选业务数据；请求切换时中止旧调用，避免跨路径回写。
 async function loadCandidates(nextPage = 1) {
@@ -166,7 +158,7 @@ onBeforeUnmount(() => {
 
 <template>
   <n-modal :show="show" @update:show="value => emit('update:show', value)">
-    <n-card class="base-form-data-picker" data-testid="base-form-data-picker" title="选择基础表单数据" :style="pickerStyle" :aria-busy="loading">
+    <n-card class="base-form-data-picker app-dialog app-dialog--lg" data-testid="base-form-data-picker" title="选择基础表单数据" :aria-busy="loading">
       <div class="base-form-data-picker__body">
         <n-radio-group v-if="scope === 'path'" v-model:value="pathMode" size="small">
           <n-radio-button value="default">沿用计划统一数据</n-radio-button>
@@ -219,14 +211,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.base-form-data-picker {
-  width: min(760px, 94vw);
-}
 .base-form-data-picker__body {
   display: grid;
   gap: 14px;
-  max-height: min(68vh, 720px);
-  overflow: auto;
 }
 .base-form-data-picker__loading {
   display: flex;
@@ -247,7 +234,7 @@ onBeforeUnmount(() => {
   color: inherit;
   font: inherit;
   text-align: left;
-  border: 1px solid var(--picker-border-color);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   background: transparent;
   cursor: pointer;
@@ -258,14 +245,14 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 .base-form-data-picker__candidate small {
-  color: var(--picker-secondary-text-color);
+  color: var(--text-color-3);
 }
 .base-form-data-picker__notice {
-  color: var(--picker-notice-color);
+  color: var(--warning-color);
 }
 .base-form-data-picker__candidate:hover,
 .base-form-data-picker__candidate--selected {
-  border-color: var(--picker-active-color);
+  border-color: var(--primary-color);
 }
 .base-form-data-picker__candidate:disabled {
   cursor: not-allowed;

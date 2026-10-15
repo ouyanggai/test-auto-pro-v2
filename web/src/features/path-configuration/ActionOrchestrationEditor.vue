@@ -324,7 +324,7 @@ function removeAction(index: number) {
 
 
     <n-modal :show="editorOpen" @update:show="handleVisibility">
-      <n-card :title="`${title}（拖动整张卡片调整顺序）`" style="width: min(720px, 94vw)">
+      <n-card class="app-dialog app-dialog--md" :title="`${title}（拖动整张卡片调整顺序）`">
         <div
           v-for="(action, index) in actions"
           :key="action.key"
@@ -397,7 +397,7 @@ function removeAction(index: number) {
       </n-card>
     </n-modal>
     <n-modal :show="allPeopleOpen" @update:show="value => (allPeopleOpen = value)">
-      <n-card :title="allPeopleTitle" style="width: min(420px, 90vw)" :bordered="false">
+      <n-card class="app-dialog app-dialog--sm" :title="allPeopleTitle" :bordered="false">
         <ul class="all-people-list">
           <li v-for="(name, index) in allPeopleNames" :key="name">{{ index + 1 }}. {{ name }}</li>
         </ul>
@@ -417,17 +417,17 @@ function removeAction(index: number) {
 .action-orchestration__muted{font-size:12px;opacity:.6}
 .action-orchestration__summary{display:flex;flex-wrap:wrap;gap:6px}
 .action-summary-section{display:flex;align-items:center;flex-wrap:wrap;gap:6px;width:100%}
-.action-summary-label{font-size:12px;font-weight:500;color:var(--n-text-color-2,#606266)}
+.action-summary-label{font-size:12px;font-weight:500;color:var(--text-color-2)}
 .action-orchestration__default-mark{margin-left:4px}
 .action-orchestration__catalog{font-size:12px}
 .action-orchestration__catalog ul{display:grid;gap:8px;margin:8px 0 0;padding-left:16px}
 .action-orchestration__catalog-head{display:flex;align-items:center;gap:6px}
 .action-orchestration__catalog p{margin:2px 0}
-.action-orchestration__blocked{color:var(--path-config-warning-color,#d97706)}
+.action-orchestration__blocked{color:var(--warning-color)}
 .action-orchestration__reasons{display:grid;gap:6px}
-.action-row{display:grid;gap:6px;padding:10px 12px;margin-bottom:10px;border:1px solid var(--path-config-border-color,#e5e7eb);border-radius:6px;cursor:grab}
+.action-row{display:grid;gap:6px;padding:10px 12px;margin-bottom:10px;border:1px solid var(--border-color);border-radius:6px;cursor:grab}
 .action-row--dragging{opacity:.6}
-.action-row--drop{border-color:var(--path-config-primary-color,#2080f0)}
+.action-row--drop{border-color:var(--primary-color)}
 .action-row__head{display:flex;align-items:center;gap:10px}
 .action-arrival{display:flex;align-items:center;gap:4px;flex:0 0 auto;font-size:13px}
 .action-drag-handle{width:14px;height:14px}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCard, NEmpty, NModal, NResult, NSpace, NSpin, NTag, useNotification, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NCard, NEmpty, NModal, NResult, NSpace, NSpin, NTag, useNotification } from 'naive-ui'
 import type { NotificationReactive } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
@@ -74,7 +74,6 @@ type FormRuntimeExpose = InstanceType<typeof FormRuntimeFrame> & {
 
 const route = useRoute()
 const router = useRouter()
-const themeVars = useThemeVars()
 const planID = computed(() => String(route.params.planId || ''))
 const pathID = computed(() => String(route.params.pathId || ''))
 const plan = ref<PersistedPlan | null>(null)
@@ -190,13 +189,6 @@ function showFormNotice() {
   }
 }
 
-const pageThemeStyle = computed(() => ({
-  '--path-config-page-color': themeVars.value.bodyColor,
-  '--path-config-card-color': themeVars.value.cardColor,
-  '--path-config-border-color': themeVars.value.borderColor,
-  '--path-config-text-color': themeVars.value.textColor1,
-  '--path-config-text-secondary-color': themeVars.value.textColor2,
-}))
 // 计划状态只用于展示任务事实，配置修改只影响后续运行。
 const planMutable = computed(() => Boolean(plan.value))
 const formReadOnly = computed(() => !planMutable.value)
@@ -962,7 +954,7 @@ void loadPage()
   <main
     class="path-configuration-page"
     :class="{ 'path-configuration-page--form': workspace === 'form' }"
-    :style="pageThemeStyle"
+
     :aria-busy="pageLoading"
   >
     <header class="path-configuration-page__header">
@@ -991,7 +983,7 @@ void loadPage()
     />
 
     <n-modal v-model:show="routeConfirmationOpen" :mask-closable="false" :closable="false">
-      <n-card title="确认换路并覆盖数据" style="width: min(620px, 94vw)">
+      <n-card class="app-dialog app-dialog--md" title="确认换路并覆盖数据">
         <div class="path-configuration-page__cycle-body">
           <n-alert type="warning" :show-icon="false">{{ routeConfirmationChange?.warning || '当前表单数据命中了其他执行路径，请确认后继续保存。' }}</n-alert>
           <div v-if="routeConfirmationChange" class="path-configuration-page__route-change">
@@ -1141,8 +1133,8 @@ void loadPage()
 <style scoped>
 .path-configuration-page {
   --path-config-app-header-height: 64px;
-  --path-config-main-block-padding: 40px;
-  --path-config-main-inline-padding: 48px;
+  --path-config-main-block-padding: var(--app-content-pad-top);
+  --path-config-main-inline-padding: var(--app-content-pad-x);
   --path-config-form-toolbar-height: 54px;
 
   display: grid;
@@ -1151,8 +1143,8 @@ void loadPage()
   height: calc(100dvh - 144px);
   min-height: 600px;
   overflow: hidden;
-  color: var(--path-config-text-color);
-  background: var(--path-config-page-color);
+  color: var(--text-color-1);
+  background: var(--body-color);
 }
 
 .path-configuration-page--form {
@@ -1161,7 +1153,7 @@ void loadPage()
   height: calc(100dvh - var(--path-config-app-header-height));
   min-height: calc(100dvh - var(--path-config-app-header-height));
   max-height: calc(100dvh - var(--path-config-app-header-height));
-  margin: calc(0px - var(--path-config-main-block-padding)) calc(0px - var(--path-config-main-inline-padding));
+  margin: calc(0px - var(--app-content-pad-top)) calc(0px - var(--path-config-main-inline-padding)) calc(0px - var(--app-content-pad-bottom));
   overflow: hidden;
 }
 
@@ -1185,9 +1177,9 @@ void loadPage()
   flex: 0 0 auto;
   margin: 0 16px 10px;
   padding: 8px 10px;
-  border: 1px solid var(--path-config-border-color);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: var(--path-config-text-secondary-color);
+  color: var(--text-color-2);
   font-size: 12px;
   line-height: 1.55;
 }
@@ -1198,32 +1190,32 @@ void loadPage()
   flex-wrap: wrap;
   gap: 8px;
 }
-.path-configuration-page__form-summary-head strong { color: var(--path-config-text-color); }
+.path-configuration-page__form-summary-head strong { color: var(--text-color-1); }
 .path-configuration-page__form-summary p { margin: 4px 0 0; }
 .path-configuration-page__form-summary-list {
   margin: 4px 0 0;
   padding-left: 18px;
 }
-.path-configuration-page__route-change { flex-direction: column; align-items: flex-start; color: var(--path-config-text-color); }
+.path-configuration-page__route-change { flex-direction: column; align-items: flex-start; color: var(--text-color-1); }
 
 .path-configuration-page__header { justify-content: space-between; gap: 16px; padding: 4px 0 10px; }
 /* 头部单行布局：标题与副标题同行、进度居中、按钮靠右；压缩纵向空间。 */
 .path-configuration-page__identity { align-items: baseline; gap: 12px; min-width: 0; flex: 1 1 auto; }
 .path-configuration-page__identity h1 { margin: 0; font-size: 17px; line-height: 1.3; letter-spacing: 0; white-space: nowrap; }
-.path-configuration-page__identity p { margin: 0; color: var(--path-config-text-secondary-color); line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.path-configuration-page__progress { flex: 0 0 auto; gap: 10px; font-size: 13px; line-height: 1.5; color: var(--path-config-text-secondary-color); }
+.path-configuration-page__identity p { margin: 0; color: var(--text-color-2); line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.path-configuration-page__progress { flex: 0 0 auto; gap: 10px; font-size: 13px; line-height: 1.5; color: var(--text-color-2); }
 .path-configuration-page__progress span { white-space: nowrap; }
-.path-configuration-page__progress-divider { width: 1px; height: 14px; background: var(--path-config-border-color); }
+.path-configuration-page__progress-divider { width: 1px; height: 14px; background: var(--border-color); }
 .path-configuration-page__actions { flex: 0 0 auto; align-items: center; gap: 8px; }
-.path-configuration-page__switch { gap: 8px; padding: 4px 0 12px; border-bottom: 1px solid var(--path-config-border-color); }
+.path-configuration-page__switch { gap: 8px; padding: 4px 0 12px; border-bottom: 1px solid var(--border-color); }
 .path-configuration-page__cycle-body { display: grid; gap: 12px; }
 
 .path-configuration-page__stage {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--path-config-card-color);
-  border: 1px solid var(--path-config-border-color);
+  background: var(--ta-reading);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
 }
 
@@ -1262,7 +1254,7 @@ void loadPage()
   flex: 0 0 auto;
   margin: 0 16px 12px;
   padding: 8px 12px;
-  border: 1px solid var(--path-config-border-color);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   font-size: 13px;
 }
@@ -1273,7 +1265,7 @@ void loadPage()
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  background: var(--path-config-card-color);
+  background: var(--ta-reading);
 }
 .path-configuration-page__scenario-toolbar {
   display: flex;
@@ -1282,10 +1274,10 @@ void loadPage()
   justify-content: space-between;
   gap: 16px;
   padding: 10px 14px;
-  border-bottom: 1px solid var(--path-config-border-color);
+  border-bottom: 1px solid var(--border-color);
 }
 .path-configuration-page__scenario-toolbar h2 { margin: 0 0 4px; font-size: 18px; }
-.path-configuration-page__scenario-toolbar p { margin: 0; color: var(--path-config-text-secondary-color); font-size: 12px; }
+.path-configuration-page__scenario-toolbar p { margin: 0; color: var(--text-color-2); font-size: 12px; }
 .path-configuration-page__scenario-body {
   display: flex;
   flex: 1 1 0;
@@ -1310,7 +1302,7 @@ void loadPage()
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  background: var(--path-config-card-color);
+  background: var(--ta-reading);
 }
 
 .path-configuration-page__form-toolbar {
@@ -1320,10 +1312,10 @@ void loadPage()
   height: var(--path-config-form-toolbar-height);
   min-height: var(--path-config-form-toolbar-height);
   padding: 8px 12px;
-  border-bottom: 1px solid var(--path-config-border-color);
+  border-bottom: 1px solid var(--border-color);
 }
 .path-configuration-page__form-toolbar h2 { margin: 0 0 4px; font-size: 18px; }
-.path-configuration-page__form-toolbar p { margin: 0; color: var(--path-config-text-secondary-color); font-size: 12px; }
+.path-configuration-page__form-toolbar p { margin: 0; color: var(--text-color-2); font-size: 12px; }
 .path-configuration-page__form-actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .path-configuration-page__form-hints {
   position: absolute;
@@ -1332,22 +1324,16 @@ void loadPage()
   z-index: 30;
   width: 300px;
   max-width: calc(100% - 28px);
-  background: #fff;
-  border: 1px solid var(--path-config-border-color);
+  background: var(--ta-reading);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  color: #262626;
-  color-scheme: light;
+  color: var(--text-color-1);
 }
-.path-configuration-page__form-hints :deep(.n-collapse) {
-  --n-text-color: rgba(0, 0, 0, 0.82) !important;
-  --n-divider-color: rgba(0, 0, 0, 0.12) !important;
-  --n-title-text-color: rgba(0, 0, 0, 0.9) !important;
-  --n-arrow-color: rgba(0, 0, 0, 0.7) !important;
-}
-.path-configuration-page__form-hints :deep(.n-collapse-item__header) { padding: 12px 14px; color: #262626 !important; }
-.path-configuration-page__form-hints :deep(.n-collapse-item__header-main) { color: #262626 !important; }
+
+.path-configuration-page__form-hints :deep(.n-collapse-item__header) { padding: 12px 14px; color: var(--text-color-1) !important; }
+.path-configuration-page__form-hints :deep(.n-collapse-item__header-main) { color: var(--text-color-1) !important; }
 .path-configuration-page__form-hints :deep(.n-collapse-item__content-wrapper) { padding: 0 14px 12px; }
-.path-configuration-page__form-hints :deep(.n-base-icon) { color: #595959 !important; }
+.path-configuration-page__form-hints :deep(.n-base-icon) { color: var(--text-color-2) !important; }
 .path-configuration-page__form-hints-body {
   max-height: 300px;
   overflow-y: auto;
@@ -1363,28 +1349,28 @@ void loadPage()
   align-items: start;
   gap: 6px;
   padding: 7px 8px;
-  border-left: 2px solid var(--path-config-border-color);
-  background: #fff;
+  border-left: 2px solid var(--border-color);
+  background: var(--ta-reading);
   line-height: 1.55;
 }
 .path-configuration-page__form-hints-list li + li { margin-top: 5px; }
-.path-configuration-page__form-hints-list strong { color: #262626; font-weight: 600; }
+.path-configuration-page__form-hints-list strong { color: var(--text-color-1); font-weight: 600; }
 .path-configuration-page__form-hint-head { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
-.path-configuration-page__form-hint-head > span { color: #595959; }
-.path-configuration-page__form-hints-list p { margin: 0; color: #262626; }
-.path-configuration-page__form-hints-list small { color: #737373; }
+.path-configuration-page__form-hint-head > span { color: var(--text-color-2); }
+.path-configuration-page__form-hints-list p { margin: 0; color: var(--text-color-1); }
+.path-configuration-page__form-hints-list small { color: var(--text-color-3); }
 .path-configuration-page__form-hint--selected {
-  background: #f0f9f4;
-  border-left-color: #18a058 !important;
+  background: color-mix(in srgb, var(--success-color) 8%, var(--ta-reading));
+  border-left-color: var(--success-color) !important;
 }
 .path-configuration-page__form-hint--review {
-  background: #fff2f0;
-  border-left-color: #d03050 !important;
+  background: color-mix(in srgb, var(--error-color) 8%, var(--ta-reading));
+  border-left-color: var(--error-color) !important;
 }
 .path-configuration-page__form-error-details {
   margin: 6px 0 0;
   padding-left: 18px;
-  color: var(--path-config-text-secondary-color);
+  color: var(--text-color-2);
   font-size: 12px;
   line-height: 1.7;
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NButton, NEmpty, NModal, NTag, useMessage, useThemeVars } from 'naive-ui'
+import { NButton, NEmpty, NModal, NTag, useMessage } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
 import { formatElapsed, formatTime } from './api'
@@ -442,22 +442,6 @@ function gateItemText(item: { label?: string; key?: string; required?: boolean; 
   }
 }
 
-// dialogStyle 是三个详情弹窗共用的尺寸与配色：弹窗内容被传送到 body，
-// 拿不到页面里声明的自定义属性，主题色必须随弹窗自己带过去。
-const themeVars = useThemeVars()
-const dialogStyle = computed(() => ({
-  width: '760px',
-  maxWidth: '94vw',
-  // 弹窗高度约束：内容被传送到 body，不加最大高度会冲破视口且无滚动（实测缺陷）。
-  maxHeight: '86vh',
-  overflowY: 'auto',
-  '--run-border-color': themeVars.value.dividerColor,
-  '--run-secondary-text-color': themeVars.value.textColor3,
-  '--info-color': themeVars.value.infoColor,
-  '--success-color': themeVars.value.successColor,
-  '--error-color': themeVars.value.errorColor,
-  '--warning-color': themeVars.value.warningColor,
-}))
 </script>
 
 <template>
@@ -503,7 +487,7 @@ const dialogStyle = computed(() => ({
             <n-button text size="tiny" type="info" @click="planDialog = action">详情</n-button>
           </li>
         </ul>
-        <p v-if="planActions.length === 0" class="run-panel__lead" style="color: var(--run-secondary-text-color, #909090);">
+        <p v-if="planActions.length === 0" class="run-panel__lead run-panel__muted">
           这个节点在本次运行的计划里没有动作：它不在已配置路线上，或由目标引擎自动通过。
         </p>
       </section>
@@ -526,7 +510,7 @@ const dialogStyle = computed(() => ({
             <n-button v-else-if="item.status === 'running'" text size="tiny" type="info" @click="openStepDialog()">详情</n-button>
           </li>
         </ul>
-        <p v-if="nodeTimeline.length === 0" class="run-panel__lead" style="color: var(--run-secondary-text-color, #909090);">
+        <p v-if="nodeTimeline.length === 0" class="run-panel__lead run-panel__muted">
           这个节点当前没有已执行、正在执行或等待执行的步骤。
         </p>
       </section>
@@ -554,10 +538,10 @@ const dialogStyle = computed(() => ({
     </div>
 
     <!-- 计划动作详情：编译场景已经用中文写好前置条件与预期效果，这里原样呈现。 -->
-    <n-modal
+    <n-modal class="app-dialog app-dialog--md"
       :show="planDialog !== null"
       preset="card"
-      :style="dialogStyle"
+
       :title="`计划动作：${actionLabel(planDialog?.actionName, planDialog?.action)}`"
       @update:show="planDialog = null"
     >
@@ -578,10 +562,10 @@ const dialogStyle = computed(() => ({
     </n-modal>
 
     <!-- 当前步详情：门禁逐项、目标实时事实与即将发出的请求。 -->
-    <n-modal
+    <n-modal class="app-dialog app-dialog--lg"
       :show="previewDialogOpen"
       preset="card"
-      :style="dialogStyle"
+
       title="当前步详情"
       @update:show="previewDialogOpen = false"
     >
@@ -615,8 +599,8 @@ const dialogStyle = computed(() => ({
     <n-modal
       :show="stepDialog !== null"
       preset="card"
-      class="run-panel__dialog"
-      :style="dialogStyle"
+      class="run-panel__dialog app-dialog app-dialog--lg"
+
       :title="stepDialog ? `第 ${stepDialog.stepNo} 步 · ${stepActionLabel(stepDialog)} · 接口详情` : ''"
       @update:show="stepDialog = null"
     >
@@ -729,8 +713,8 @@ const dialogStyle = computed(() => ({
   min-height: 0;
   overflow: hidden;
   font-size: 13px;
-  background: var(--run-surface-color, var(--flow-surface-color, #fff));
-  border: 1px solid var(--run-border-color, var(--flow-edge-color, #ccc));
+  background: var(--ta-reading);
+  border: 1px solid var(--divider-color);
   border-radius: 8px;
 }
 
@@ -753,7 +737,7 @@ const dialogStyle = computed(() => ({
   align-items: center;
   gap: 6px;
   margin: 5px 0 0;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 
 /* 页签：与主区页签同一套下划线样式，错误页签用错误色标出。 */
@@ -761,12 +745,12 @@ const dialogStyle = computed(() => ({
   display: flex;
   gap: 2px;
   padding: 0 8px;
-  border-bottom: 1px solid var(--run-border-color, var(--flow-edge-color, #ccc));
+  border-bottom: 1px solid var(--divider-color);
 }
 
 .run-panel__tab {
   padding: 7px 10px;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   font: inherit;
   cursor: pointer;
   background: transparent;
@@ -776,14 +760,14 @@ const dialogStyle = computed(() => ({
 }
 
 .run-panel__tab--active {
-  color: var(--run-primary-color, #18a058);
+  color: var(--primary-color);
   font-weight: 500;
-  border-bottom-color: var(--run-primary-color, #18a058);
+  border-bottom-color: var(--primary-color);
 }
 
 .run-panel__tab--danger.run-panel__tab--active {
-  color: var(--error-color, #d03050);
-  border-bottom-color: var(--error-color, #d03050);
+  color: var(--error-color);
+  border-bottom-color: var(--error-color);
 }
 
 .run-panel__body {
@@ -795,7 +779,7 @@ const dialogStyle = computed(() => ({
 
 .run-panel__lead {
   margin: 0 0 8px;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 
 .run-panel__rows {
@@ -815,7 +799,7 @@ const dialogStyle = computed(() => ({
 }
 
 .run-panel__retry-note {
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   font-size: 12px;
 }
 
@@ -825,28 +809,28 @@ const dialogStyle = computed(() => ({
   justify-content: space-between;
   gap: 8px;
   padding: 8px 10px;
-  border: 1px solid var(--run-border-color, var(--flow-edge-color, #ccc));
+  border: 1px solid var(--divider-color);
   border-radius: 6px;
 }
 
 .run-panel__row--bad {
-  border-color: color-mix(in srgb, var(--error-color, #d03050) 46%, transparent);
-  background: color-mix(in srgb, var(--error-color, #d03050) 6%, transparent);
+  border-color: color-mix(in srgb, var(--error-color) 46%, transparent);
+  background: color-mix(in srgb, var(--error-color) 6%, transparent);
 }
 
 .run-panel__timeline-row--executed {
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 
 .run-panel__timeline-row--running {
-  color: var(--primary-color, #18a058);
-  border-color: color-mix(in srgb, var(--primary-color, #18a058) 45%, var(--run-border-color, #ccc));
-  background: color-mix(in srgb, var(--primary-color, #18a058) 7%, transparent);
+  color: var(--primary-color);
+  border-color: color-mix(in srgb, var(--primary-color) 45%, var(--divider-color));
+  background: color-mix(in srgb, var(--primary-color) 7%, transparent);
 }
 
 .run-panel__timeline-row--waiting {
-  color: var(--info-color, #2080f0);
-  background: color-mix(in srgb, var(--info-color, #2080f0) 5%, transparent);
+  color: var(--info-color);
+  background: color-mix(in srgb, var(--info-color) 5%, transparent);
 }
 
 .run-panel__row-main {
@@ -861,14 +845,14 @@ const dialogStyle = computed(() => ({
 }
 
 .run-panel__row-verdict {
-  color: var(--error-color, #d03050);
+  color: var(--error-color);
   font-weight: 600;
 }
 
 .run-panel__row-sub {
   display: -webkit-box;
   overflow: hidden;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   line-height: 1.5;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -879,7 +863,7 @@ const dialogStyle = computed(() => ({
   gap: 4px;
   margin: 0 0 12px;
   padding: 9px 10px;
-  border: 1px solid var(--run-border-color, var(--flow-edge-color, #ccc));
+  border: 1px solid var(--divider-color);
   border-radius: 6px;
 }
 
@@ -894,8 +878,8 @@ const dialogStyle = computed(() => ({
 
 .run-panel__block-title { font-weight: 600; }
 
-.run-panel__ok { color: var(--success-color, #18a058); }
-.run-panel__bad { color: var(--error-color, #d03050); }
+.run-panel__ok { color: var(--success-color); }
+.run-panel__bad { color: var(--error-color); }
 
 /* 详情弹窗内的事实表：左列中文标题，右列事实，长文本自动换行。 */
 .run-panel__facts {
@@ -911,7 +895,7 @@ const dialogStyle = computed(() => ({
 }
 
 .run-panel__facts dt {
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 
 .run-panel__facts dd {
@@ -928,14 +912,14 @@ const dialogStyle = computed(() => ({
   gap: 2px;
   margin: 0 0 12px;
   padding: 8px 10px;
-  border-left: 3px solid var(--error-color, #d03050);
-  background: color-mix(in srgb, var(--error-color, #d03050) 5%, transparent);
+  border-left: 3px solid var(--error-color);
+  background: color-mix(in srgb, var(--error-color) 5%, transparent);
   border-radius: 0 6px 6px 0;
 }
 
 .run-panel__why p { margin: 0; line-height: 1.6; word-break: break-word; }
 
-.run-panel__why-next { color: var(--run-secondary-text-color, #909090); }
+.run-panel__why-next { color: var(--text-color-3); }
 
 /* 接口请求行式布局：类型、路径（可换行）、耗时、结果一行可扫读，窄屏不溢出。 */
 .run-panel__req-lines {
@@ -951,10 +935,10 @@ const dialogStyle = computed(() => ({
 .run-panel__interface-heading { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; }
 .run-panel__interface-heading .run-panel__section-title { margin: 0; }
 .run-panel__interfaces > .run-panel__timing-note { margin: 5px 0 10px; }
-.run-panel__request-entry { min-width: 0; padding: 10px 12px; border: 1px solid var(--run-border-color); border-radius: 6px; }
+.run-panel__request-entry { min-width: 0; padding: 10px 12px; border: 1px solid var(--divider-color); border-radius: 6px; }
 .run-panel__request-entry--bad { border-left: 3px solid var(--error-color); }
 .run-panel__request-entry .run-panel__req-line { padding: 0; border: 0; }
-.run-panel__request-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0; color: var(--run-secondary-text-color); font-size: 12px; }
+.run-panel__request-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0; color: var(--text-color-3); font-size: 12px; }
 .run-panel__request-entry .run-panel__req-result { white-space: pre-wrap; overflow-wrap: anywhere; }
 .run-panel__log-entry { margin: 10px 0; min-width: 0; }
 .run-panel__log-entry p { margin: 5px 0; }
@@ -967,7 +951,7 @@ const dialogStyle = computed(() => ({
   flex-wrap: wrap;
   gap: 4px 10px;
   padding: 7px 10px;
-  border: 1px solid var(--run-border-color, var(--flow-edge-color, #ccc));
+  border: 1px solid var(--divider-color);
   border-radius: 6px;
 }
 
@@ -983,7 +967,7 @@ const dialogStyle = computed(() => ({
 
 .run-panel__timing-note {
   margin: 0;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   line-height: 1.6;
 }
 
@@ -995,7 +979,7 @@ const dialogStyle = computed(() => ({
 /* 技术细节区：直接展开，包含操作、接口与耗时、日志位置 */
 .run-panel__tech-details {
   margin: 14px 0 0;
-  border-top: 1px dashed var(--run-border-color, var(--flow-edge-color, #ccc));
+  border-top: 1px dashed var(--divider-color);
   padding-top: 12px;
 }
 
@@ -1003,19 +987,19 @@ const dialogStyle = computed(() => ({
   margin: 0 0 10px;
   font-weight: 600;
   font-size: 13px;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 
 .run-panel__debug {
   margin: 4px 0 0;
-  border: 1px solid var(--run-border-color, var(--flow-edge-color, #ccc));
+  border: 1px solid var(--divider-color);
   border-radius: 6px;
   padding: 8px 10px;
 }
 
 .run-panel__debug > summary {
   cursor: pointer;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 
 .run-panel__debug-list {
@@ -1031,7 +1015,7 @@ const dialogStyle = computed(() => ({
   align-items: baseline;
 }
 
-.run-panel__debug-list dt { color: var(--run-secondary-text-color, #909090); }
+.run-panel__debug-list dt { color: var(--text-color-3); }
 
 .run-panel__debug-list dd { margin: 0; }
 
@@ -1058,7 +1042,7 @@ const dialogStyle = computed(() => ({
   gap: 3px;
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px dashed var(--run-border-color, var(--flow-edge-color, #ccc));
+  border-top: 1px dashed var(--divider-color);
 }
 
 .run-panel__attempt p { margin: 0; }
@@ -1067,7 +1051,7 @@ const dialogStyle = computed(() => ({
 
 .run-panel__phase {
   padding: 1px 6px;
-  background: color-mix(in srgb, var(--info-color, #2080f0) 10%, transparent);
+  background: color-mix(in srgb, var(--info-color) 10%, transparent);
   border-radius: 8px;
 }
 
@@ -1083,15 +1067,11 @@ const dialogStyle = computed(() => ({
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-all;
-  background: color-mix(in srgb, var(--run-border-color, #ccc) 16%, transparent);
+  background: color-mix(in srgb, var(--divider-color) 16%, transparent);
   border-radius: 4px;
 }
 
 /* 详情弹窗的分区、事实卡片与尝试卡片：让每一步的事实、门禁和尝试层次分明。 */
-.run-panel__dialog :deep(.n-card__content) {
-  max-height: 72vh;
-  overflow: auto;
-}
 
 .run-panel__dialog-head {
   display: flex;
@@ -1101,7 +1081,7 @@ const dialogStyle = computed(() => ({
 }
 
 .run-panel__dialog-meta {
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 
 .run-panel__section {
@@ -1116,13 +1096,13 @@ const dialogStyle = computed(() => ({
   margin: 0 0 8px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--run-secondary-text-color, #666);
+  color: var(--text-color-3);
 }
 
 .run-panel__facts--card {
   padding: 10px 12px;
-  background: color-mix(in srgb, var(--run-border-color, #ccc) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--run-border-color, #ccc) 52%, transparent);
+  background: color-mix(in srgb, var(--divider-color) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--divider-color) 52%, transparent);
   border-radius: 8px;
 }
 
@@ -1140,7 +1120,7 @@ const dialogStyle = computed(() => ({
   align-items: start;
   padding: 7px 10px;
   border-radius: 7px;
-  background: color-mix(in srgb, var(--run-border-color, #ccc) 8%, transparent);
+  background: color-mix(in srgb, var(--divider-color) 8%, transparent);
 }
 
 .run-panel__condition-dot {
@@ -1148,31 +1128,31 @@ const dialogStyle = computed(() => ({
   height: 8px;
   margin-top: 5px;
   border-radius: 50%;
-  background: var(--info-color, #2080f0);
+  background: var(--info-color);
 }
 
 .run-panel__condition--passed .run-panel__condition-dot {
-  background: var(--success-color, #18a058);
+  background: var(--success-color);
 }
 
 .run-panel__condition--failed {
-  background: color-mix(in srgb, var(--error-color, #d03050) 8%, transparent);
+  background: color-mix(in srgb, var(--error-color) 8%, transparent);
 }
 
 .run-panel__condition--failed .run-panel__condition-dot {
-  background: var(--error-color, #d03050);
+  background: var(--error-color);
 }
 
 .run-panel__attempt {
   padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--run-border-color, #ccc) 52%, transparent);
+  border: 1px solid color-mix(in srgb, var(--divider-color) 52%, transparent);
   border-left-width: 3px;
   border-radius: 8px;
 }
 
-.run-panel__attempt--success { border-left-color: var(--success-color, #18a058); }
-.run-panel__attempt--warning { border-left-color: var(--warning-color, #f0a020); }
-.run-panel__attempt--error { border-left-color: var(--error-color, #d03050); }
+.run-panel__attempt--success { border-left-color: var(--success-color); }
+.run-panel__attempt--warning { border-left-color: var(--warning-color); }
+.run-panel__attempt--error { border-left-color: var(--error-color); }
 
 .run-panel__attempt + .run-panel__attempt {
   margin-top: 8px;
@@ -1189,7 +1169,7 @@ const dialogStyle = computed(() => ({
   display: flex;
   flex-wrap: wrap;
   gap: 6px 16px;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 
 .run-panel__log-ref {
@@ -1201,7 +1181,7 @@ const dialogStyle = computed(() => ({
 
 .run-panel__no-curl {
   margin: 4px 0 0;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   line-height: 1.6;
 }
 
@@ -1217,8 +1197,8 @@ const dialogStyle = computed(() => ({
 .run-panel__gate-failed {
   margin: 8px 0 4px;
   padding: 8px 10px;
-  border-left: 3px solid var(--error-color, #d03050);
-  background: color-mix(in oklch, var(--error-color, #d03050) 8%, transparent);
+  border-left: 3px solid var(--error-color);
+  background: color-mix(in oklch, var(--error-color) 8%, transparent);
   border-radius: 0 6px 6px 0;
   list-style: none;
   display: flex;
@@ -1232,7 +1212,7 @@ const dialogStyle = computed(() => ({
   line-height: 1.6;
 }
 .run-panel__gate-failed-icon {
-  color: var(--error-color, #d03050);
+  color: var(--error-color);
   font-weight: 600;
   flex-shrink: 0;
   width: 14px;
@@ -1251,28 +1231,28 @@ const dialogStyle = computed(() => ({
   line-height: 1.6;
   font-weight: 600;
   word-break: break-word;
-  border-left: 3px solid var(--run-secondary-text-color, #909090);
-  background: color-mix(in srgb, var(--run-secondary-text-color, #909090) 6%, transparent);
+  border-left: 3px solid var(--text-color-3);
+  background: color-mix(in srgb, var(--text-color-3) 6%, transparent);
 }
 
 .run-panel__plain--success {
-  border-left-color: var(--success-color, #18a058);
-  background: color-mix(in srgb, var(--success-color, #18a058) 8%, transparent);
+  border-left-color: var(--success-color);
+  background: color-mix(in srgb, var(--success-color) 8%, transparent);
 }
 
 .run-panel__plain--error {
-  border-left-color: var(--error-color, #d03050);
-  background: color-mix(in srgb, var(--error-color, #d03050) 8%, transparent);
+  border-left-color: var(--error-color);
+  background: color-mix(in srgb, var(--error-color) 8%, transparent);
 }
 
 .run-panel__plain--warning {
-  border-left-color: var(--warning-color, #f0a020);
-  background: color-mix(in srgb, var(--warning-color, #f0a020) 8%, transparent);
+  border-left-color: var(--warning-color);
+  background: color-mix(in srgb, var(--warning-color) 8%, transparent);
 }
 
 .run-panel__plain--info {
-  border-left-color: var(--info-color, #2080f0);
-  background: color-mix(in srgb, var(--info-color, #2080f0) 8%, transparent);
+  border-left-color: var(--info-color);
+  background: color-mix(in srgb, var(--info-color) 8%, transparent);
 }
 
 /* 摘要区：结论与主体信息一行，时间靠右；浅色底与卡片描边拉开层次。 */
@@ -1283,9 +1263,9 @@ const dialogStyle = computed(() => ({
   gap: 12px;
   margin-bottom: 12px;
   padding: 10px 12px;
-  border: 1px solid var(--run-border-color, var(--flow-edge-color, #ccc));
+  border: 1px solid var(--divider-color);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--run-border-color, #ccc) 8%, transparent);
+  background: color-mix(in srgb, var(--divider-color) 8%, transparent);
 }
 
 .run-panel__summary-main {
@@ -1302,12 +1282,12 @@ const dialogStyle = computed(() => ({
 }
 
 .run-panel__summary-sub {
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 
 .run-panel__summary-time {
   flex: none;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -1324,7 +1304,7 @@ const dialogStyle = computed(() => ({
   display: grid;
   gap: 2px;
   padding: 10px 12px;
-  border: 1px solid var(--run-border-color, var(--flow-edge-color, #ccc));
+  border: 1px solid var(--divider-color);
   border-radius: 8px;
 }
 
@@ -1336,7 +1316,7 @@ const dialogStyle = computed(() => ({
 }
 
 .run-panel__metric-label {
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   font-size: 12px;
 }
 
@@ -1351,9 +1331,9 @@ const dialogStyle = computed(() => ({
   display: grid;
   gap: 1px;
   padding: 6px 10px;
-  border: 1px solid color-mix(in srgb, var(--run-border-color, #ccc) 52%, transparent);
+  border: 1px solid color-mix(in srgb, var(--divider-color) 52%, transparent);
   border-radius: 7px;
-  background: color-mix(in srgb, var(--info-color, #2080f0) 6%, transparent);
+  background: color-mix(in srgb, var(--info-color) 6%, transparent);
 }
 
 .run-panel__phase-step--empty {
@@ -1362,7 +1342,7 @@ const dialogStyle = computed(() => ({
 
 .run-panel__phase-name {
   font-size: 12px;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 
 .run-panel__phase-ms {
@@ -1373,7 +1353,7 @@ const dialogStyle = computed(() => ({
 
 .run-panel__muted {
   margin: 0;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   line-height: 1.6;
 }
 
@@ -1388,11 +1368,11 @@ const dialogStyle = computed(() => ({
 .run-panel__req-table td {
   padding: 7px 10px;
   text-align: left;
-  border-bottom: 1px solid color-mix(in srgb, var(--run-border-color, #ccc) 40%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--divider-color) 40%, transparent);
 }
 
 .run-panel__req-table th {
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   font-weight: 500;
 }
 
@@ -1414,14 +1394,14 @@ const dialogStyle = computed(() => ({
 }
 
 .run-panel__req-kind--write {
-  color: var(--warning-color, #f0a020);
-  background: color-mix(in srgb, var(--warning-color, #f0a020) 14%, transparent);
+  color: var(--warning-color);
+  background: color-mix(in srgb, var(--warning-color) 14%, transparent);
   font-weight: 600;
 }
 
 .run-panel__req-kind--read {
-  color: var(--info-color, #2080f0);
-  background: color-mix(in srgb, var(--info-color, #2080f0) 10%, transparent);
+  color: var(--info-color);
+  background: color-mix(in srgb, var(--info-color) 10%, transparent);
 }
 
 .run-panel__req-endpoint {
@@ -1439,16 +1419,16 @@ const dialogStyle = computed(() => ({
 /* 目标平台原始返回：逐尝试块、原始错误原话高亮、逐条接口结果 */
 .run-panel__req-result {
   font-size: 12px;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 .run-panel__req-result--bad {
-  color: var(--error-color, #d03050);
+  color: var(--error-color);
   font-weight: 600;
 }
 .run-panel__target-return {
   margin: 6px 0;
   padding: 6px 0;
-  border-top: 1px dashed var(--n-border-color, #e0e0e6);
+  border-top: 1px dashed var(--border-color);
 }
 .run-panel__target-head {
   margin: 0 0 4px;
@@ -1457,7 +1437,7 @@ const dialogStyle = computed(() => ({
   margin: 4px 0;
   padding: 6px 8px;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--run-border-color) 12%, transparent);
+  background: color-mix(in srgb, var(--divider-color) 12%, transparent);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   line-height: 1.5;
@@ -1468,14 +1448,14 @@ const dialogStyle = computed(() => ({
   overflow-wrap: anywhere;
 }
 .run-panel__target-message--bad {
-  color: var(--error-color, #d03050);
-  background: color-mix(in srgb, var(--error-color, #d03050) 8%, transparent);
+  color: var(--error-color);
+  background: color-mix(in srgb, var(--error-color) 8%, transparent);
 }
 
 .run-panel__req-retry {
   display: inline-block;
   margin-top: 2px;
-  color: var(--warning-color, #f0a020);
+  color: var(--warning-color);
   font-size: 12px;
 }
 
@@ -1495,7 +1475,7 @@ const dialogStyle = computed(() => ({
 <style scoped>
 /* 阶段列与 trace 列：小字号弱化，trace 可点击复制。 */
 .run-panel__req-phase {
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   white-space: nowrap;
 }
 
@@ -1503,7 +1483,7 @@ const dialogStyle = computed(() => ({
   display: inline-block;
   margin-top: 2px;
   cursor: pointer;
-  color: var(--info-color, #2080f0);
+  color: var(--info-color);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
 }
@@ -1519,7 +1499,7 @@ const dialogStyle = computed(() => ({
 }
 
 .run-panel__runtime-message {
-  color: var(--run-secondary-text-color, #606060);
+  color: var(--text-color-3);
 }
 
 .run-panel__runtime-stages {
@@ -1541,13 +1521,13 @@ const dialogStyle = computed(() => ({
   min-width: 120px;
 }
 
-.run-panel__runtime-stage-state.run-panel__tone--ok { color: #18a058; }
-.run-panel__runtime-stage-state.run-panel__tone--bad { color: #d03050; }
-.run-panel__runtime-stage-state.run-panel__tone--warn { color: #f0a020; }
-.run-panel__runtime-stage-state.run-panel__tone--idle { color: #909090; }
+.run-panel__runtime-stage-state.run-panel__tone--ok { color: var(--success-color); }
+.run-panel__runtime-stage-state.run-panel__tone--bad { color: var(--error-color); }
+.run-panel__runtime-stage-state.run-panel__tone--warn { color: var(--warning-color); }
+.run-panel__runtime-stage-state.run-panel__tone--idle { color: var(--text-color-3); }
 
 .run-panel__runtime-stage-count {
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 
 .run-panel__runtime-requests {

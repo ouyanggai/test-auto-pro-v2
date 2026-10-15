@@ -19,7 +19,6 @@ import {
   NTag,
   NVirtualList,
   useMessage,
-  useThemeVars,
 } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -71,7 +70,6 @@ import { createUuid } from '../utils/uuid'
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
-const themeVars = useThemeVars()
 const plan = ref<PersistedPlan | null>(null)
 const graph = ref<FlowGraph | null>(null)
 const paths = ref<ExecutionPath[]>([])
@@ -133,14 +131,6 @@ const visiblePaths = computed(() => paths.value)
 // 而虚拟列表按外层 style 高度算滚动范围，被 CSS 截掉的行既渲染不出来也滚不到，路径直接变成点不到。
 const MAX_VISIBLE_PATHS = 5
 const preparationPathListHeight = computed(() => Math.min(visiblePaths.value.length, MAX_VISIBLE_PATHS) * PREPARATION_PATH_ITEM_SIZE)
-const pageThemeStyle = computed(() => ({
-  '--plan-card-color': themeVars.value.cardColor,
-  '--plan-page-color': themeVars.value.bodyColor,
-  '--plan-border-color': themeVars.value.borderColor,
-  '--plan-divider-color': themeVars.value.dividerColor,
-  '--plan-text-color': themeVars.value.textColor1,
-  '--plan-text-secondary-color': themeVars.value.textColor2,
-}))
 const pathAnalysis = computed(() => graph.value
   ? analyzeExecutionPath(graph.value, draftChoices.value)
   : null)
@@ -839,7 +829,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="plan-paths-page" :style="pageThemeStyle">
+  <section class="plan-paths-page">
     <n-spin :show="planLoading">
       <div v-if="plan" class="paths-content">
         <section class="plan-paths-screen plan-paths-screen--overview" aria-labelledby="plan-paths-heading">
@@ -1223,7 +1213,7 @@ onMounted(() => {
         </div>
       </section>
     </n-spin>
-    <n-modal
+    <n-modal class="app-dialog app-dialog--sm"
       v-model:show="discardConfirmOpen"
       preset="dialog"
       title="放弃本次修改"
@@ -1233,7 +1223,7 @@ onMounted(() => {
     >
       当前名称或线路尚未保存，放弃后本次修改无法恢复。
     </n-modal>
-    <n-modal
+    <n-modal class="app-dialog app-dialog--sm"
       v-model:show="deleteConfirmOpen"
       preset="dialog"
       title="删除路径"
@@ -1261,8 +1251,8 @@ onMounted(() => {
 
   width: 100%;
   min-width: 0;
-  color: var(--plan-text-color);
-  background: var(--plan-page-color);
+  color: var(--text-color-1);
+  background: var(--body-color);
 }
 
 :global(.app-main > .n-layout-scroll-container.plan-paths-scroll-container) {
@@ -1312,7 +1302,7 @@ onMounted(() => {
 }
 
 .page-heading__selection {
-  color: var(--paths-secondary-text-color, inherit);
+  color: var(--text-color-3);
   white-space: nowrap;
 }
 
@@ -1330,7 +1320,7 @@ onMounted(() => {
 
 .page-heading h1 {
   margin-bottom: 8px;
-  color: var(--plan-text-color);
+  color: var(--text-color-1);
   font-size: 28px;
 }
 
@@ -1341,9 +1331,9 @@ onMounted(() => {
   margin-top: 20px;
   padding: 14px 16px;
   overflow: hidden;
-  color: var(--plan-text-color);
-  background: var(--plan-card-color);
-  border: 1px solid var(--plan-border-color);
+  color: var(--text-color-1);
+  background: var(--ta-reading);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
 }
 
@@ -1372,7 +1362,7 @@ onMounted(() => {
 
 .path-prepare__header p {
   margin: 0;
-  color: var(--plan-text-secondary-color);
+  color: var(--text-color-2);
   font-size: 13px;
 }
 
@@ -1380,8 +1370,8 @@ onMounted(() => {
   display: grid;
   gap: 8px;
 	padding: 10px 0;
-	border-top: 1px solid var(--plan-border-color);
-	border-bottom: 1px solid var(--plan-border-color);
+	border-top: 1px solid var(--border-color);
+	border-bottom: 1px solid var(--border-color);
 }
 
 .path-prepare__job-summary {
@@ -1397,7 +1387,7 @@ onMounted(() => {
 	justify-content: space-between;
 	gap: 12px;
 	min-width: 0;
-	color: var(--plan-text-secondary-color);
+	color: var(--text-color-2);
 	font-size: 12px;
 	flex-wrap: wrap;
 }
@@ -1414,7 +1404,7 @@ onMounted(() => {
 
 .path-prepare__job-summary > span {
   flex: 1 1 auto;
-  color: var(--plan-text-secondary-color);
+  color: var(--text-color-2);
   font-size: 12px;
 }
 
@@ -1426,14 +1416,14 @@ onMounted(() => {
 
 .path-prepare__empty {
   padding-top: 4px;
-  color: var(--plan-text-color);
+  color: var(--text-color-1);
   font-size: 13px;
 }
 
 .path-prepare__state {
   min-height: 56px;
   padding: 4px 0;
-  color: var(--plan-text-secondary-color);
+  color: var(--text-color-2);
   font-size: 13px;
 }
 
@@ -1443,7 +1433,7 @@ onMounted(() => {
 }
 
 .path-prepare__state--error {
-  color: var(--plan-text-color);
+  color: var(--text-color-1);
 }
 
 .path-prepare__list {
@@ -1461,7 +1451,7 @@ onMounted(() => {
 	height: 84px;
   padding: 6px 8px;
 	transition: background-color 160ms ease, box-shadow 160ms ease;
-  border-bottom: 1px solid var(--plan-divider-color);
+  border-bottom: 1px solid var(--divider-color);
 }
 
 .path-prepare__identity {
@@ -1481,7 +1471,7 @@ onMounted(() => {
 
 .path-prepare__sequence {
   flex: 0 0 auto;
-  color: var(--plan-text-secondary-color);
+  color: var(--text-color-2);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1494,8 +1484,8 @@ onMounted(() => {
 }
 
 @keyframes path-prepare-attention {
-	0%, 35% { background: rgba(240, 160, 32, 0.22); }
-	100% { background: rgba(240, 160, 32, 0.04); }
+	0%, 35% { background: color-mix(in srgb, var(--warning-color) 22%, transparent); }
+	100% { background: color-mix(in srgb, var(--warning-color) 4%, transparent); }
 }
 
 .graph-heading h2 {
@@ -1506,7 +1496,7 @@ onMounted(() => {
 .page-heading p,
 .graph-heading p {
   margin: 0;
-  color: var(--plan-text-secondary-color);
+  color: var(--text-color-2);
 }
 
 .graph-section {
@@ -1540,7 +1530,7 @@ onMounted(() => {
   height: 100%;
   min-height: 0;
   place-items: center;
-  border-top: 1px solid var(--plan-border-color);
+  border-top: 1px solid var(--border-color);
 }
 
 .graph-region :deep(.flow-graph-canvas:not(.flow-graph-canvas--page-fullscreen)) {
@@ -1585,7 +1575,7 @@ onMounted(() => {
 
 .path-selection-panel__header {
   padding: 4px 14px 10px;
-  border-bottom: 1px solid var(--flow-edge-color);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .path-selection-panel__header h3,
@@ -1611,14 +1601,14 @@ onMounted(() => {
 }
 
 .path-summary__item span {
-  color: var(--flow-label-color);
+  color: var(--text-color-2);
   font-size: 12px;
   opacity: 0.72;
 }
 
 .path-selection-panel__details {
   padding: 10px 14px;
-  border-bottom: 1px solid var(--flow-edge-color);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .path-selection-panel__details dl {
@@ -1634,7 +1624,7 @@ onMounted(() => {
 }
 
 .path-selection-panel__details dt {
-  color: var(--flow-label-color);
+  color: var(--text-color-2);
   font-size: 12px;
   opacity: 0.68;
 }
@@ -1643,7 +1633,7 @@ onMounted(() => {
   min-width: 0;
   margin: 0;
   overflow: hidden;
-  color: var(--flow-label-color);
+  color: var(--text-color-2);
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1652,7 +1642,7 @@ onMounted(() => {
 .path-selection-panel__progress {
   display: flex;
   gap: 12px;
-  color: var(--flow-label-color);
+  color: var(--text-color-2);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   opacity: 0.72;
@@ -1661,7 +1651,7 @@ onMounted(() => {
 .path-selection-panel__collapsed-summary {
   display: grid;
   gap: 8px;
-  color: var(--flow-label-color);
+  color: var(--text-color-2);
 }
 
 .saved-paths-popover {
@@ -1679,7 +1669,7 @@ onMounted(() => {
   gap: 12px;
   min-height: 48px;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--flow-edge-color);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .saved-paths-popover__header h3 {
@@ -1696,7 +1686,7 @@ onMounted(() => {
 .saved-paths-popover__generate {
   flex: 0 0 auto;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--flow-edge-color);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .saved-paths-popover__item {
@@ -1715,8 +1705,8 @@ onMounted(() => {
 }
 
 .saved-paths-popover__item--active {
-  color: var(--flow-direction-color);
-  background: color-mix(in srgb, var(--flow-direction-color) 10%, var(--flow-surface-color));
+  color: var(--primary-color);
+  background: color-mix(in srgb, var(--primary-color) 10%, var(--ta-reading));
 }
 
 .saved-paths-popover__sequence {
@@ -1746,7 +1736,7 @@ onMounted(() => {
   display: grid;
   gap: 8px;
   padding: 12px 14px;
-  border-bottom: 1px solid var(--flow-edge-color);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .path-selection-panel__name-label {
@@ -1754,7 +1744,7 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  color: var(--flow-label-color);
+  color: var(--text-color-2);
   font-size: 13px;
 }
 
@@ -1785,7 +1775,7 @@ onMounted(() => {
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 14px;
-  border-top: 1px solid var(--flow-edge-color);
+  border-top: 1px solid var(--border-color);
 }
 
 .path-summary {
@@ -1812,7 +1802,7 @@ onMounted(() => {
 .path-summary__item:not(:last-child)::before {
   top: 14px;
   bottom: 0;
-  background: var(--flow-edge-color);
+  background: var(--border-color);
 }
 
 .path-summary__item--node:not(:last-child)::after,
@@ -1820,7 +1810,7 @@ onMounted(() => {
 .path-summary__item--parallel:not(:last-child)::after {
   top: 14px;
   height: 14px;
-  background: linear-gradient(to bottom, transparent, var(--flow-direction-color), transparent);
+  background: linear-gradient(to bottom, transparent, var(--primary-color), transparent);
   animation: path-summary-flow 1.25s linear infinite;
 }
 
@@ -1834,8 +1824,8 @@ onMounted(() => {
   left: -14px;
   width: 9px;
   height: 9px;
-  background: var(--flow-surface-color);
-  border: 2px solid var(--flow-edge-color);
+  background: var(--ta-reading);
+  border: 2px solid var(--border-color);
   border-radius: 50%;
 }
 
@@ -1846,7 +1836,7 @@ onMounted(() => {
 
 .path-summary__item strong {
   overflow: hidden;
-  color: var(--flow-label-color);
+  color: var(--text-color-2);
   font-size: 13px;
   font-weight: 500;
   text-overflow: ellipsis;
@@ -1855,16 +1845,16 @@ onMounted(() => {
 
 .path-summary__item--choice .path-summary__marker,
 .path-summary__item--parallel .path-summary__marker {
-  background: var(--flow-direction-color);
-  border-color: var(--flow-direction-color);
+  background: var(--primary-color);
+  border-color: var(--primary-color);
 }
 
 .path-summary__item--next strong {
-  color: var(--flow-direction-color);
+  color: var(--primary-color);
 }
 
 .path-summary__item--next .path-summary__marker {
-  border-color: var(--flow-direction-color);
+  border-color: var(--primary-color);
 }
 
 .path-summary__item--pending {

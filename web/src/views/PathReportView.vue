@@ -174,7 +174,7 @@ onBeforeUnmount(() => { controller?.abort() })
 .path-report__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .path-report__header h1 { margin: 6px 0 0; font-size: 20px; }
 .path-report__actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-.path-report__error { color: var(--error-color, #d03050); margin: 0; }
+.path-report__error { color: var(--error-color); margin: 0; }
 .path-report__loading { display: flex; gap: 10px; align-items: center; opacity: 0.8; }
 .path-report__meta :deep(.n-card__content) { padding-top: 12px; }
 .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
@@ -192,6 +192,6 @@ onBeforeUnmount(() => { controller?.abort() })
 .report-table__result { display: flex; align-items: center; gap: 6px; }
 .report-table__num { text-align: right; font-variant-numeric: tabular-nums; }
 .report-table__sub { margin-left: 6px; color: var(--text-color-3); font-size: 12px; }
-.report-table__ref { font-family: var(--font-family-mono, monospace); font-size: 12px; }
+.report-table__ref { font-family: var(--font-family-mono); font-size: 12px; }
 .path-report__legend { margin: 12px 0 0; color: var(--text-color-3); font-size: 12px; line-height: 1.6; }
 </style>

@@ -379,7 +379,7 @@ const columns: DataTableColumns<PlanRow> = [
 
 .page-heading p {
   margin: 0;
-  color: var(--n-text-color-2);
+  color: var(--text-color-2);
   line-height: 1.7;
 }
 
@@ -405,13 +405,13 @@ const columns: DataTableColumns<PlanRow> = [
   gap: 12px;
   margin-left: auto;
   padding: 8px 16px;
-  background: var(--n-color-target);
+  background: var(--ta-reading);
   border-radius: 6px;
 }
 
 .batch-count {
   font-size: 14px;
-  color: var(--n-text-color-2);
+  color: var(--text-color-2);
 }
 
 .plan-table-region {
@@ -425,7 +425,7 @@ const columns: DataTableColumns<PlanRow> = [
   align-items: center;
   gap: 12px;
   min-height: 120px;
-  color: var(--n-text-color-2);
+  color: var(--text-color-2);
 }
 
 :deep(.plan-row-actions) {

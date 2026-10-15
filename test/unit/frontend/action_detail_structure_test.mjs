@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const panel = fs.readFileSync(new URL('../../../web/src/features/runs/RunNodePanel.vue', import.meta.url), 'utf8')
 const view = fs.readFileSync(new URL('../../../web/src/views/RunDetailView.vue', import.meta.url), 'utf8')
+const layout = fs.readFileSync(new URL('../../../web/src/styles/layout.css', import.meta.url), 'utf8')
 
 test('动作弹窗只渲染一次有序请求清单，不列同节点其他操作或第二份轨迹', () => {
   assert.match(panel, /mergeActionRequests\(stepDialog.value\)/)
@@ -15,8 +16,10 @@ test('动作弹窗只渲染一次有序请求清单，不列同节点其他操�
 })
 
 test('长错误和日志内容可滚动，窄窗口能换行，不渲染 HTTP 0', () => {
-  assert.match(panel, /maxWidth: '94vw'/)
-  assert.match(panel, /maxHeight: '86vh'/)
+  assert.match(panel, /run-panel__dialog app-dialog app-dialog--lg/)
+  assert.match(layout, /max-width: calc\(100vw - 48px\)/)
+  assert.match(layout, /max-height: calc\(100dvh - 96px\)/)
+  assert.match(layout, /\.app-dialog\.n-card > \.n-card__content[^}]*overflow: auto/s)
   assert.match(panel, /white-space: pre-wrap/)
   assert.match(panel, /overflow-wrap: anywhere/)
   assert.match(panel, /req\.statusCode > 0/)

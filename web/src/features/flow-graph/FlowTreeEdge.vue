@@ -89,7 +89,7 @@ const emit = defineEmits<{
 <style scoped>
 .flow-tree-edge__direction {
   fill: none;
-  stroke: var(--flow-direction-color);
+  stroke: var(--primary-color);
   stroke-width: 1.6;
   stroke-dasharray: 3 19;
   stroke-linecap: round;
@@ -102,12 +102,12 @@ const emit = defineEmits<{
 }
 
 :deep(.flow-tree-edge__base--selected) {
-  stroke: var(--flow-direction-color);
+  stroke: var(--primary-color);
   stroke-width: 3;
 }
 
 :deep(.flow-tree-edge__base--candidate) {
-  stroke: var(--flow-direction-color);
+  stroke: var(--primary-color);
   stroke-width: 1.8;
 }
 
@@ -117,12 +117,12 @@ const emit = defineEmits<{
 
 /* 运行画布：真实走过的连线加粗并带流向动画；偏离已配置路径的连线标红。 */
 :deep(.flow-tree-edge__base--taken) {
-  stroke: var(--flow-direction-color);
+  stroke: var(--primary-color);
   stroke-width: 3;
 }
 
 :deep(.flow-tree-edge__base--deviated) {
-  stroke: #d03050;
+  stroke: var(--error-color);
   stroke-width: 3;
 }
 
@@ -132,7 +132,7 @@ const emit = defineEmits<{
 }
 
 .flow-tree-edge__direction--deviated {
-  stroke: #d03050;
+  stroke: var(--error-color);
   stroke-width: 3.2;
   opacity: 0.95;
 }
@@ -152,10 +152,10 @@ const emit = defineEmits<{
   z-index: 4;
   min-height: 32px;
   padding: 5px 10px;
-  color: var(--flow-label-color);
+  color: var(--text-color-2);
   white-space: nowrap;
-  background: var(--flow-surface-color);
-  border: 1px solid var(--flow-edge-color);
+  background: var(--ta-reading);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   pointer-events: all;
 }
@@ -168,15 +168,15 @@ const emit = defineEmits<{
 .flow-tree-edge__choice:hover,
 .flow-tree-edge__choice:focus-visible,
 .flow-tree-edge__choice--candidate {
-  color: var(--flow-direction-color);
-  border-color: var(--flow-direction-color);
+  color: var(--primary-color);
+  border-color: var(--primary-color);
   outline: none;
 }
 
 .flow-tree-edge__choice--selected {
-  color: var(--flow-direction-color);
-  background: color-mix(in srgb, var(--flow-direction-color) 10%, var(--flow-surface-color));
-  border-color: var(--flow-direction-color);
+  color: var(--primary-color);
+  background: color-mix(in srgb, var(--primary-color) 10%, var(--ta-reading));
+  border-color: var(--primary-color);
 }
 
 .flow-tree-edge__choice--selected:disabled {
@@ -196,7 +196,7 @@ const emit = defineEmits<{
 .flow-tree-edge__required {
   display: inline-flex;
   align-items: center;
-  color: var(--flow-direction-color);
+  color: var(--primary-color);
   pointer-events: none;
 }
 

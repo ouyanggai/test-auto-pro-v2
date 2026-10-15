@@ -134,13 +134,13 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 .node-configuration-panel{height:100%;display:flex;flex-direction:column;gap:12px;padding:16px}
 .node-configuration-panel__header{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .node-configuration-panel__body{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:16px}
-.node-configuration-panel__section{border-top:1px solid #e5e7eb;padding-top:14px}
+.node-configuration-panel__section{border-top:1px solid var(--divider-color);padding-top:14px}
 .person-row{display:flex;flex-direction:column;align-items:stretch;gap:7px;margin-top:12px}
-.person-meta{display:flex;align-items:center;gap:8px;color:#64748b;font-size:12px}
+.person-meta{display:flex;align-items:center;gap:8px;color:var(--text-color-3);font-size:12px}
 .person-controls{display:flex;flex-direction:column;gap:7px}
-.node-configuration-panel p,.node-configuration-panel small{color:#64748b}
-.node-configuration-panel__footer{display:flex;flex-direction:column;align-items:stretch;gap:10px;margin:0 -16px -16px;padding:14px 16px 16px;border-top:1px solid #e5e7eb;background:#fafafa}
-.save-status{min-height:20px;color:#64748b}
+.node-configuration-panel p,.node-configuration-panel small{color:var(--text-color-3)}
+.node-configuration-panel__footer{display:flex;flex-direction:column;align-items:stretch;gap:10px;margin:0 -16px -16px;padding:14px 16px 16px;border-top:1px solid var(--divider-color);background:var(--ta-surface-2)}
+.save-status{min-height:20px;color:var(--text-color-3)}
 .save-details{margin:6px 0 0;padding-left:18px}
 .save-button{align-self:flex-end;min-width:132px}
 .node-configuration-panel h2,.node-configuration-panel h3{margin:0}

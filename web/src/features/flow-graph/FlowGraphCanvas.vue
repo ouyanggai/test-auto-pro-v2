@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Controls } from '@vue-flow/controls'
-import { NButton, NResult, useThemeVars } from 'naive-ui'
+import { NButton, NResult } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { VueFlow as VueFlowCanvas, useVueFlow } from '@vue-flow/core'
 import type { NodeChange, NodeMouseEvent } from '@vue-flow/core'
@@ -74,7 +74,6 @@ const emit = defineEmits<{
   selectRunNode: [nodeID: string]
   runViewportChange: [viewport: { x: number, y: number, zoom: number }]
 }>()
-const themeVars = useThemeVars()
 const canvasRoot = ref<HTMLElement | null>(null)
 const isPageFullscreen = ref(false)
 const isSelectionPanelCollapsed = ref(false)
@@ -180,16 +179,6 @@ const displayedLayout = computed(() => {
     }),
   }
 })
-const canvasStyle = computed(() => ({
-  '--flow-edge-color': themeVars.value.borderColor,
-  '--flow-label-color': themeVars.value.textColor2,
-  '--flow-surface-color': themeVars.value.bodyColor,
-  '--flow-direction-color': themeVars.value.primaryColor,
-  '--success-color': themeVars.value.successColor,
-  '--warning-color': themeVars.value.warningColor,
-  '--error-color': themeVars.value.errorColor,
-  '--info-color': themeVars.value.infoColor,
-}))
 const { getViewport, onInit, setViewport } = useVueFlow()
 // programmaticViewportDepth > 0 表示这次视口变化是组件自己发起的（初始定位、节点定位、全屏补偿、
 // 选择引导），不是用户平移或缩放。运行画布据此不把自动跟随误判成"被用户接管"——
@@ -538,7 +527,7 @@ onBeforeUnmount(() => {
       'flow-graph-canvas--run': runMode,
       'flow-graph-canvas--panel-collapsed': isSelectionPanelCollapsed,
     }"
-    :style="canvasStyle"
+
     :aria-label="configurationMode ? '路径节点配置流程图' : workspaceOpen ? (branchEditing ? '线路编辑流程图' : '路径查看流程图') : '只读流程图'"
   >
     <div v-if="laidOut" class="flow-graph-canvas__actions">
@@ -682,13 +671,16 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .flow-graph-canvas {
+  /* 既有布局的标签配置使用这两个变量；保留布局几何，只把标签接到全局主题。 */
+  --flow-label-color: var(--text-color-2);
+  --flow-surface-color: var(--ta-reading);
   position: relative;
   width: 100%;
   height: 560px;
   min-height: 560px;
   overflow: hidden;
-  background: var(--flow-surface-color);
-  border-top: 1px solid var(--flow-edge-color);
+  background: var(--ta-reading);
+  border-top: 1px solid var(--border-color);
 }
 
 .flow-graph-canvas--page-fullscreen {
@@ -728,9 +720,9 @@ onBeforeUnmount(() => {
   z-index: 7;
   width: 320px;
   overflow: hidden;
-  color: var(--flow-label-color);
-  background: var(--flow-surface-color);
-  border: 1px solid var(--flow-edge-color);
+  color: var(--text-color-2);
+  background: var(--ta-reading);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   height: calc(100% - 68px);
   transition: height 160ms ease;
@@ -745,9 +737,9 @@ onBeforeUnmount(() => {
   width: 320px;
   min-height: 0;
   overflow: hidden;
-  color: var(--flow-label-color);
-  background: var(--flow-surface-color);
-  border: 1px solid var(--flow-edge-color);
+  color: var(--text-color-2);
+  background: var(--ta-reading);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
 }
 
@@ -784,9 +776,9 @@ onBeforeUnmount(() => {
   width: 280px;
   max-height: 320px;
   overflow: hidden;
-  color: var(--flow-label-color);
-  background: color-mix(in srgb, var(--flow-surface-color) 90%, transparent);
-  border: 1px solid var(--flow-edge-color);
+  color: var(--text-color-2);
+  background: color-mix(in srgb, var(--ta-reading) 90%, transparent);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
@@ -809,7 +801,7 @@ onBeforeUnmount(() => {
 
 .flow-graph-canvas__guide-line {
   fill: none;
-  stroke: var(--flow-direction-color);
+  stroke: var(--primary-color);
   stroke-width: 1.4;
   stroke-dasharray: 4 5;
   opacity: 0.82;
@@ -817,7 +809,7 @@ onBeforeUnmount(() => {
 }
 
 .flow-graph-canvas__guide-lines marker path {
-  fill: var(--flow-direction-color);
+  fill: var(--primary-color);
 }
 
 .flow-graph-canvas__guide {
@@ -828,9 +820,9 @@ onBeforeUnmount(() => {
   max-width: 292px;
   min-height: 36px;
   padding: 6px 8px 6px 12px;
-  color: var(--flow-label-color);
-  background: var(--flow-surface-color);
-  border: 1px solid var(--flow-direction-color);
+  color: var(--text-color-2);
+  background: var(--ta-reading);
+  border: 1px solid var(--primary-color);
   border-radius: 4px;
   transform: translate(-50%, -50%);
   animation: flow-guide-in 140ms ease-out;
@@ -851,10 +843,10 @@ onBeforeUnmount(() => {
   top: 50%;
   z-index: 9;
   padding: 5px 8px;
-  color: var(--flow-direction-color);
+  color: var(--primary-color);
   font-size: 12px;
-  background: var(--flow-surface-color);
-  border: 1px solid var(--flow-direction-color);
+  background: var(--ta-reading);
+  border: 1px solid var(--primary-color);
   border-radius: 4px;
   transform: translateY(-50%);
   pointer-events: none;
@@ -888,7 +880,7 @@ onBeforeUnmount(() => {
 }
 
 .flow-graph-canvas :deep(.vue-flow__edge-path) {
-  stroke: var(--flow-edge-color);
+  stroke: var(--border-color);
   stroke-width: 1.35;
 }
 
@@ -906,23 +898,23 @@ onBeforeUnmount(() => {
 }
 
 .flow-graph-canvas :deep(.vue-flow__edge-textbg) {
-  fill: var(--flow-surface-color);
+  fill: var(--ta-reading);
 }
 
 .flow-graph-canvas :deep(.vue-flow__controls) {
-  border: 1px solid var(--flow-edge-color);
+  border: 1px solid var(--border-color);
   box-shadow: none;
 }
 
 .flow-graph-canvas :deep(.vue-flow__controls-button) {
-  color: var(--flow-label-color);
-  background: var(--flow-surface-color);
-  border-bottom-color: var(--flow-edge-color);
+  color: var(--text-color-2);
+  background: var(--ta-reading);
+  border-bottom-color: var(--border-color);
 }
 
 .flow-graph-canvas :deep(.vue-flow__controls-button:hover) {
-  color: var(--flow-direction-color);
-  background: color-mix(in srgb, var(--flow-direction-color) 10%, var(--flow-surface-color));
+  color: var(--primary-color);
+  background: color-mix(in srgb, var(--primary-color) 10%, var(--ta-reading));
 }
 
 .flow-graph-canvas :deep(.vue-flow__controls-button svg) {
@@ -930,8 +922,8 @@ onBeforeUnmount(() => {
 }
 
 .flow-graph-canvas :deep(.vue-flow__controls-button:disabled) {
-  color: var(--flow-label-color);
-  background: var(--flow-surface-color);
+  color: var(--text-color-2);
+  background: var(--ta-reading);
   opacity: 0.45;
 }
 

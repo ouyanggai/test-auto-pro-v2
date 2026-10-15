@@ -768,7 +768,7 @@ async function submitPlan() {
 
 .page-heading p {
   margin: 0;
-  color: var(--n-text-color-2);
+  color: var(--text-color-2);
   line-height: 1.7;
 }
 

@@ -55,10 +55,10 @@ defineProps<{ data?: FlowNodeData }>()
   width: 136px;
   min-height: 42px;
   padding: 4px 8px;
-  color: var(--flow-label-color);
+  color: var(--text-color-2);
   cursor: pointer;
-  background: var(--flow-surface-color);
-  border: 1px dashed var(--flow-edge-color);
+  background: var(--ta-reading);
+  border: 1px dashed var(--border-color);
   border-radius: 4px;
   transform: translate(-50%, -50%);
   pointer-events: all;
@@ -67,12 +67,12 @@ defineProps<{ data?: FlowNodeData }>()
 .flow-routing-hub__configuration:hover:not(:disabled),
 .flow-routing-hub__configuration:focus-visible,
 .flow-routing-hub__configuration--selected {
-  border-color: var(--flow-direction-color);
+  border-color: var(--primary-color);
   outline: none;
 }
 
 .flow-routing-hub__configuration--selected {
-  background: color-mix(in srgb, var(--flow-direction-color) 9%, var(--flow-surface-color));
+  background: color-mix(in srgb, var(--primary-color) 9%, var(--ta-reading));
   border-style: solid;
 }
 

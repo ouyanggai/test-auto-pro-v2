@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NModal, NSpin, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NModal, NSpin } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
 import { useRouter } from 'vue-router'
@@ -23,7 +23,6 @@ const modeOptions = [
   { value: 'manual_control', title: '手动控制', description: '每个动作组执行完就停下，由我确认后再继续' },
 ]
 
-const themeVars = useThemeVars()
 const readiness = ref<PlanRunReadiness | null>(null)
 const loading = ref(false)
 const error = ref('')
@@ -41,15 +40,6 @@ const startTargets = computed<PathRunReadiness[]>(() => {
 const canStart = computed(() => startTargets.value.length > 0)
 // allClear 语义收窄为"有路径可运行"：阻塞路径的存在不再阻止运行就绪子集（失败隔离 S05）。
 const hasPaths = computed(() => Boolean(readiness.value) && (readiness.value?.totalCount ?? 0) > 0)
-// 宽度必须写成行内样式：NModal 的卡片是 teleport 出去渲染的，scoped 样式选不中它，
-// 只靠 class 设宽度会退化成撑满整屏。
-const dialogStyle = computed(() => ({
-  width: '720px',
-  maxWidth: 'calc(100vw - 48px)',
-  '--preflight-border-color': themeVars.value.borderColor,
-  '--preflight-secondary-text-color': themeVars.value.textColor3,
-  '--preflight-primary-color': themeVars.value.primaryColor,
-}))
 
 // runCheck 只检查本次勾选的路径：运行也只运行勾选路径，两边范围必须一致。
 async function runCheck() {
@@ -160,9 +150,9 @@ watch(() => props.show, (open) => {
     :show="show"
     preset="card"
     title="开始运行"
-    class="run-preflight"
+    class="run-preflight app-dialog app-dialog--md"
     data-testid="run-preflight-dialog"
-    :style="dialogStyle"
+
     :bordered="false"
     size="small"
     :mask-closable="!loading"
@@ -318,8 +308,6 @@ watch(() => props.show, (open) => {
 /* 打开即给稳定高度：检查中与结果之间不出现"先一张小空白、再突然变一大窗"的跳变。 */
 .run-preflight__body {
   min-height: 172px;
-  max-height: 62vh;
-  overflow-y: auto;
 }
 
 /* 检查中占位：呼吸圆点 + 两句说明，明确说出正在核对哪些内容。 */
@@ -336,21 +324,21 @@ watch(() => props.show, (open) => {
   width: 10px;
   height: 10px;
   margin-bottom: 8px;
-  background: var(--preflight-primary-color);
+  background: var(--primary-color);
   border-radius: 50%;
   animation: run-preflight-pulse 1.1s ease-in-out infinite;
 }
 
 .run-preflight__checking-title {
   margin: 0;
-  color: var(--preflight-secondary-text-color);
+  color: var(--text-color-3);
   font-size: 14px;
 }
 
 .run-preflight__checking-hint {
   max-width: 460px;
   margin: 0;
-  color: var(--preflight-secondary-text-color);
+  color: var(--text-color-3);
   font-size: 12px;
   line-height: 1.6;
   opacity: 0.82;
@@ -384,13 +372,13 @@ watch(() => props.show, (open) => {
 }
 
 .run-preflight__verdict--ok {
-  background: rgba(24, 160, 88, 0.08);
-  color: #18a058;
+  background: color-mix(in srgb, var(--success-color) 10%, transparent);
+  color: var(--success-color);
 }
 
 .run-preflight__verdict--blocked {
-  background: rgba(240, 160, 32, 0.1);
-  color: #f0a020;
+  background: color-mix(in srgb, var(--warning-color) 10%, transparent);
+  color: var(--warning-color);
 }
 
 .run-preflight__verdict-icon {
@@ -401,7 +389,7 @@ watch(() => props.show, (open) => {
   height: 20px;
   border-radius: 50%;
   background: currentColor;
-  color: #fff;
+  color: var(--ta-on-status);
   font-size: 12px;
   font-weight: 700;
   flex: none;
@@ -411,7 +399,7 @@ watch(() => props.show, (open) => {
 .run-preflight__section-label {
   margin: 0 0 8px;
   font-size: 13px;
-  color: var(--preflight-secondary-text-color);
+  color: var(--text-color-3);
 }
 
 /* 运行方式卡片：标题 + 说明的选中卡片，选中的用主题色描边。 */
@@ -440,7 +428,7 @@ watch(() => props.show, (open) => {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--preflight-secondary-text-color);
+  color: var(--text-color-3);
   font-size: 13px;
   white-space: nowrap;
 }
@@ -448,7 +436,7 @@ watch(() => props.show, (open) => {
 .run-preflight__concurrency-input {
   width: 60px;
   padding: 4px 8px;
-  border: 1px solid var(--preflight-border-color);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   background: transparent;
   color: inherit;
@@ -459,7 +447,7 @@ watch(() => props.show, (open) => {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  border: 1px solid var(--preflight-border-color);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   background: transparent;
   color: inherit;
@@ -470,8 +458,8 @@ watch(() => props.show, (open) => {
 }
 
 .run-preflight__card--active {
-  border-color: var(--preflight-primary-color);
-  box-shadow: inset 0 0 0 1px var(--preflight-primary-color);
+  border-color: var(--primary-color);
+  box-shadow: inset 0 0 0 1px var(--primary-color);
 }
 
 .run-preflight__card-title {
@@ -479,18 +467,18 @@ watch(() => props.show, (open) => {
 }
 
 .run-preflight__card--active .run-preflight__card-title {
-  color: var(--preflight-primary-color);
+  color: var(--primary-color);
 }
 
 .run-preflight__card-desc {
-  color: var(--preflight-secondary-text-color);
+  color: var(--text-color-3);
   font-size: 13px;
   line-height: 1.5;
 }
 
 .run-preflight__muted {
   margin: 0;
-  color: var(--preflight-secondary-text-color);
+  color: var(--text-color-3);
   font-size: 13px;
 }
 
@@ -505,7 +493,7 @@ watch(() => props.show, (open) => {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  border: 1px solid var(--preflight-border-color);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   background: transparent;
   color: inherit;
@@ -516,7 +504,7 @@ watch(() => props.show, (open) => {
 }
 
 .run-preflight__block:hover {
-  border-color: var(--preflight-secondary-text-color);
+  border-color: var(--text-color-3);
 }
 
 .run-preflight__block-name {
@@ -524,7 +512,7 @@ watch(() => props.show, (open) => {
 }
 
 .run-preflight__block-reason {
-  color: var(--preflight-secondary-text-color);
+  color: var(--text-color-3);
   font-size: 13px;
   line-height: 1.5;
 }
@@ -548,7 +536,7 @@ watch(() => props.show, (open) => {
 /* 启动阶段提示：启动期间的右下角状态文字，让用户知道没有卡住。 */
 .run-preflight__stage {
   margin-right: auto;
-  color: var(--preflight-secondary-text-color);
+  color: var(--text-color-3);
   font-size: 13px;
 }
 </style>

@@ -138,7 +138,7 @@ const columns = computed<DataTableColumns<AddSignExclusionItem>>(() => [
     width: 100,
     // 系统自动排除（停用/无平台权限）由目标数据决定，不可手动移除；只有手动项可移除。
     render: (row) => row.source === 'auto'
-      ? h('span', { style: 'color: var(--n-text-color-3)' }, '—')
+      ? h('span', { style: 'color: var(--text-color-3)' }, '—')
       : h(
         NPopconfirm,
         { onPositiveClick: () => remove(row) },
@@ -211,12 +211,12 @@ onMounted(loadItems)
 <style scoped>
 .exclusion { display: grid; gap: 16px; padding: 24px; }
 .back-nav { margin-bottom: 8px; }
-.back-btn { padding-left: 0; color: var(--n-text-color-2); font-weight: 500; transition: all 0.2s ease; }
-.back-btn:hover { color: var(--n-primary-color); transform: translateX(-2px); }
+.back-btn { padding-left: 0; color: var(--text-color-2); font-weight: 500; transition: all 0.2s ease; }
+.back-btn:hover { color: var(--primary-color); transform: translateX(-2px); }
 .exclusion__header h1 { margin: 6px 0 4px; }
-.exclusion__header p { margin: 0; color: var(--n-text-color-3); max-width: 720px; }
+.exclusion__header p { margin: 0; color: var(--text-color-3); max-width: 720px; }
 .exclusion__add { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) auto; gap: 12px; align-items: center; }
-.exclusion__hint { margin: 12px 0 0; color: var(--n-text-color-3); font-size: 13px; }
+.exclusion__hint { margin: 12px 0 0; color: var(--text-color-3); font-size: 13px; }
 .exclusion__list-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .exclusion__search { display: flex; gap: 8px; }
 @media (max-width: 760px) { .exclusion__add { grid-template-columns: 1fr; } }

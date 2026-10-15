@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NInputNumber, NPopconfirm, NPopover, NResult, NSelect, NSpin, NTag, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NInputNumber, NPopconfirm, NPopover, NResult, NSelect, NSpin, NTag } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -89,7 +89,6 @@ watch(() => route.params.pathRunId, (next) => {
   runEvents.value = []
   void loadDetail().catch(() => {})
 })
-const themeVars = useThemeVars()
 
 const detail = ref<PathRunDetail | null>(null)
 const graph = ref<FlowGraph | null>(null)
@@ -525,9 +524,6 @@ const runStepNotes = computed<Record<string, string>>(() => {
   return notes
 })
 
-// headerVars 给传送到顶栏的身份区单独带上主题色：传送出去的节点不在本页根节点下，
-// 拿不到根上声明的自定义属性。
-const headerVars = computed(() => ({ '--run-secondary-text-color': themeVars.value.textColor3 }))
 
 // graphNodeByID 是图节点索引：面板标题与断点提示都用真实业务名称，不显示内部标识。
 const graphNodeByID = computed(() => new Map((graph.value?.nodes ?? []).map((node) => [node.id, node])))
@@ -1007,20 +1003,10 @@ onBeforeUnmount(() => {
 <template>
   <section
     class="run-detail"
-    :style="{
-      '--run-surface-color': themeVars.cardColor,
-      '--run-border-color': themeVars.dividerColor,
-      '--run-secondary-text-color': themeVars.textColor3,
-      '--run-primary-color': themeVars.primaryColor,
-      '--success-color': themeVars.successColor,
-      '--warning-color': themeVars.warningColor,
-      '--error-color': themeVars.errorColor,
-      '--info-color': themeVars.infoColor,
-    }"
   >
     <!-- 返回入口与本次运行的身份挂到应用顶栏：页面内不再重复一条页头，横向空间全部留给操作区。 -->
     <Teleport v-if="detail" to="#app-header-context">
-      <div class="run-detail__identity" :style="headerVars">
+      <div class="run-detail__identity">
         <n-button quaternary circle size="small" aria-label="返回本次运行的执行路径" title="返回本次运行的执行路径" @click="router.push(`/runs/${runId}`)">←</n-button>
         <h2 class="run-detail__title">运行 #{{ detail.runNo }}</h2>
         <span class="run-detail__meta-path" :title="`${detail.planName} / ${detail.pathName} · ${formatTime(detail.startedAt)}`">{{ detail.planName }} / {{ detail.pathName }} · {{ formatTime(detail.startedAt) }}</span>
@@ -1347,7 +1333,7 @@ onBeforeUnmount(() => {
 .run-detail__meta-path {
   overflow: hidden;
   max-width: 34vw;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1367,7 +1353,7 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   gap: 16px;
   flex-wrap: wrap;
-  border-bottom: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
+  border-bottom: 1px solid var(--divider-color);
 }
 
 .run-detail__tabs {
@@ -1377,7 +1363,7 @@ onBeforeUnmount(() => {
 
 .run-detail__tab {
   padding: 8px 14px;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   font: inherit;
   cursor: pointer;
   background: transparent;
@@ -1387,9 +1373,9 @@ onBeforeUnmount(() => {
 }
 
 .run-detail__tab--active {
-  color: var(--run-primary-color, #18a058);
+  color: var(--primary-color);
   font-weight: 500;
-  border-bottom-color: var(--run-primary-color, #18a058);
+  border-bottom-color: var(--primary-color);
 }
 
 .run-detail__actions {
@@ -1403,17 +1389,17 @@ onBeforeUnmount(() => {
 
 .run-detail__freshness {
   margin-right: 2px;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
 .run-detail__freshness--stale {
-  color: var(--warning-color, #f0a020);
+  color: var(--warning-color);
 }
 
 .run-detail__mode-feedback {
-  color: var(--run-primary-color, #18a058);
+  color: var(--primary-color);
   font-size: 12px;
 }
 
@@ -1427,7 +1413,7 @@ onBeforeUnmount(() => {
 .run-detail__bp-hint,
 .run-detail__bp-note {
   margin: 0;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -1436,7 +1422,7 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 4px;
   padding-top: 8px;
-  border-top: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
+  border-top: 1px solid var(--divider-color);
 }
 
 .run-detail__bp-group-title {
@@ -1463,11 +1449,11 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 6px;
   padding-top: 8px;
-  border-top: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
+  border-top: 1px solid var(--divider-color);
 }
 
 .run-detail__empty {
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 
 /* 次级行：调度说明 + 多路径切换 chips。 */
@@ -1480,7 +1466,7 @@ onBeforeUnmount(() => {
 }
 
 .run-detail__schedule {
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   font-size: 13px;
 }
 
@@ -1500,13 +1486,13 @@ onBeforeUnmount(() => {
   text-align: left;
   cursor: pointer;
   background: transparent;
-  border: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
+  border: 1px solid var(--divider-color);
   border-radius: 4px;
 }
 
 .run-detail__path--active {
-  color: var(--run-primary-color, #18a058);
-  border-color: var(--run-primary-color, #18a058);
+  color: var(--primary-color);
+  border-color: var(--primary-color);
 }
 
 .run-detail__path-name { font-weight: 500; }
@@ -1524,12 +1510,12 @@ onBeforeUnmount(() => {
 .run-detail__conclusion {
   margin: 0;
   padding: 7px 12px;
-  background: color-mix(in srgb, var(--success-color, #18a058) 10%, transparent);
+  background: color-mix(in srgb, var(--success-color) 10%, transparent);
   border-radius: 6px;
 }
 
-.run-detail__error { margin: 0; color: var(--error-color, #d03050); }
-.run-detail__notice { margin: 0; color: var(--run-secondary-text-color, #909090); }
+.run-detail__error { margin: 0; color: var(--error-color); }
+.run-detail__notice { margin: 0; color: var(--text-color-3); }
 
 /* 主体：画布占满剩余空间，右侧检视面板按需出现（不出现时不占列）。 */
 .run-detail__body {
@@ -1549,12 +1535,12 @@ onBeforeUnmount(() => {
 .run-detail__canvas-view {
   height: 100%;
   min-height: 0;
-  border: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
+  border: 1px solid var(--divider-color);
   border-radius: 8px;
 }
 
 .run-detail__follow {
-  box-shadow: 0 2px 10px rgb(0 0 0 / 12%);
+  box-shadow: var(--ta-shadow-1);
 }
 
 .run-detail__side {
@@ -1567,7 +1553,7 @@ onBeforeUnmount(() => {
   height: 100%;
   padding: 10px 14px;
   overflow-y: auto;
-  border: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
+  border: 1px solid var(--divider-color);
   border-radius: 8px;
 }
 
@@ -1583,7 +1569,7 @@ onBeforeUnmount(() => {
 
 .run-detail__event-time {
   margin-right: 8px;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1593,7 +1579,7 @@ onBeforeUnmount(() => {
   padding: 4px 8px;
   background: color-mix(in oklch, currentColor 5%, transparent);
   border-radius: 4px;
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   line-height: 1.5;
@@ -1623,21 +1609,21 @@ onBeforeUnmount(() => {
 
 /* 语义颜色：错误类事件红色，警告类橙色，成功类绿色 */
 .event--error {
-  color: var(--error-color, #d03050);
+  color: var(--error-color);
 }
 .event--error .run-detail__event-detail {
-  color: color-mix(in oklch, var(--error-color, #d03050) 80%, transparent);
-  background: color-mix(in oklch, var(--error-color, #d03050) 8%, transparent);
+  color: color-mix(in oklch, var(--error-color) 80%, transparent);
+  background: color-mix(in oklch, var(--error-color) 8%, transparent);
 }
 .event--warning {
-  color: color-mix(in oklch, #e07c00 90%, black);
+  color: var(--warning-color);
 }
 .event--success {
-  color: var(--success-color, #18a058);
+  color: var(--success-color);
 }
 
 .run-detail__event-empty {
-  color: var(--run-secondary-text-color, #909090);
+  color: var(--text-color-3);
 }
 
 @media (max-width: 1320px) {
@@ -1669,7 +1655,7 @@ onBeforeUnmount(() => {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--info-color, #2080f0);
+  background: var(--info-color);
   animation: run-detail-phase-pulse 1.6s ease-in-out infinite;
 }
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import vm from 'node:vm'
 import test from 'node:test'
@@ -8,6 +8,7 @@ import { parseColor, lift, sink, alpha } from '../../../../web/src/appearance/co
 import { readSkinId, readThemeMode, skinStorageKey, themeStorageKey } from '../../../../web/src/appearance/preferences.ts'
 import { buildThemeOverrides } from '../../../../web/src/appearance/naiveTheme.ts'
 import { applyAppearance, appearanceVariables } from '../../../../web/src/appearance/applyAppearance.ts'
+import { chartBaseOption, statusPalette } from '../../../../web/src/features/reports/chartTheme.ts'
 
 const read = path => readFileSync(new URL('../../../../' + path, import.meta.url), 'utf8')
 const requireWeb = createRequire(new URL('../../../../web/package.json', import.meta.url))
@@ -135,4 +136,84 @@ test('八种首屏底色与实际令牌一致，切换入口保持快捷键与�
   assert.match(menu, /ArrowRight/)
   assert.match(menu, /ArrowLeft/)
   assert.doesNotMatch(menu, /fetch\(|defineEmits/)
+})
+
+test('11 处现有弹窗都有统一尺寸，尺寸和滚动只由全局规则管理', () => {
+  const { parse } = requireWeb('vue/compiler-sfc')
+  const targets = {
+    'views/PlanPathsView.vue': ['sm', 'sm'],
+    'views/PlanPathConfigurationView.vue': ['md'],
+    'features/history-replay/BaseFormDataPicker.vue': ['lg'],
+    'features/path-configuration/ActionOrchestrationEditor.vue': ['md', 'sm'],
+    'features/path-configuration/ActionFlowDialog.vue': ['md'],
+    'features/run-readiness/RunPreflightDialog.vue': ['md'],
+    'features/runs/RunNodePanel.vue': ['md', 'lg', 'lg'],
+  }
+  const attr = (node, name) => node.props?.find(prop => prop.type === 6 && prop.name === name)?.value?.content
+  let count = 0
+  for (const [file, sizes] of Object.entries(targets)) {
+    const source = read('web/src/' + file)
+    const result = parse(source)
+    assert.deepEqual(result.errors, [])
+    const modals = []
+    const walk = node => {
+      if (node.tag === 'n-modal') modals.push(node)
+      for (const child of node.children ?? []) walk(child)
+    }
+    walk(result.descriptor.template.ast)
+    assert.equal(modals.length, sizes.length, file)
+    for (const [index, modal] of modals.entries()) {
+      const card = attr(modal, 'preset') ? modal : modal.children.find(child => child.tag === 'n-card')
+      assert.ok(card, file)
+      assert.ok(attr(card, 'class').includes('app-dialog app-dialog--' + sizes[index]), file)
+      assert.ok(!attr(card, 'style')?.includes('width'), file)
+      count++
+    }
+    assert.doesNotMatch(source, /dialogStyle|pickerStyle/)
+  }
+  assert.equal(count, 11)
+  const layout = read('web/src/styles/layout.css')
+  assert.match(layout, /max-height: calc\(100dvh - 96px\)/)
+  assert.match(layout, /\.n-card__content[^}]*min-height: 0;[^}]*overflow: auto/)
+  assert.match(layout, /\.n-card__footer[^}]*flex: none/)
+})
+
+test('颜色只来自令牌，唯一例外是八条首屏底色与原生表单白底', () => {
+  const sources = []
+  const walk = (directory, prefix) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const file = new URL(entry.name + (entry.isDirectory() ? '/' : ''), directory)
+      const path = prefix + entry.name
+      if (entry.isDirectory()) walk(file, path + '/')
+      else if (/\.(vue|ts|css)$/.test(path)) sources.push([path, readFileSync(file, 'utf8')])
+    }
+  }
+  walk(new URL('../../../../web/src/', import.meta.url), '')
+  for (const [file, source] of sources) {
+    if (file === 'appearance/skins.ts') continue
+    const colors = source.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []
+    if (file === 'styles/layout.css') assert.equal(colors.length, 8)
+    else if (file === 'features/path-configuration/FormRuntimeFrame.vue') assert.deepEqual(colors, ['#fff'])
+    else assert.deepEqual(colors, [], file)
+  }
+  const joined = sources.map(([, source]) => source).join('\n')
+  const references = new Set([...joined.matchAll(/var\((--[\w-]+)/g)].map(match => match[1]))
+  const definitions = new Set([...joined.matchAll(/(--[\w-]+)['"]?\s*:/g)].map(match => match[1]))
+  assert.deepEqual([...references].filter(key => !definitions.has(key)), [], '不能留下未定义变量造成部分换肤失效')
+})
+
+test('图表颜色随八种组合更新，保持数据和图例状态的接口边界', () => {
+  for (const skin of skinCatalog) for (const mode of modes) {
+    const t = skinTokens[skin.id][mode], option = chartBaseOption(t), palette = statusPalette(t)
+    assert.equal(option.tooltip.backgroundColor, t.raised)
+    assert.equal(option.xAxis.axisLabel.color, t.text3)
+    assert.equal(option.yAxis.splitLine.lineStyle.color, t.divider)
+    assert.equal(palette.成功, t.success)
+    assert.equal(palette.失败, t.error)
+    assert.equal(palette.已停止, t.warning)
+    assert.ok(!Object.hasOwn(option.legend, 'selected'))
+  }
+  const chart = read('web/src/features/reports/ReportChart.vue')
+  assert.match(chart, /:option="option" autoresize/)
+  assert.doesNotMatch(chart, /registerTheme|:key=/)
 })

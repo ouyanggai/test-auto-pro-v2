@@ -168,7 +168,7 @@ onBeforeUnmount(() => { controller?.abort() })
 .report-view__header h1 { margin: 0; font-size: 20px; }
 .report-view__hint { margin: 6px 0 0; opacity: 0.75; max-width: 720px; }
 .report-view__actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-.report-view__error { color: var(--error-color, #d03050); margin: 0; }
+.report-view__error { color: var(--error-color); margin: 0; }
 .report-view__loading { display: flex; gap: 10px; align-items: center; opacity: 0.8; }
 .report-view__section-title { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 0; font-size: 16px; }
 .report-view__stamp { color: var(--text-color-3); font-size: 12px; font-weight: 400; }

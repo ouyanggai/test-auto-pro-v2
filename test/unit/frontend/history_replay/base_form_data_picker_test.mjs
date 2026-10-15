@@ -75,6 +75,7 @@ test('基础表单数据弹窗提供服务端搜索并对搜索空态给出不�
 
 test('基础表单数据弹窗不使用 naive 内部变量着色，避免祖先主题色渗漏', () => {
   assert.equal(picker.includes('var(--n-color'), false, '弹窗不应直接引用 naive 内部 --n-color 变量')
-  assert.match(picker, /useThemeVars\(\)/)
-  assert.match(picker, /--picker-active-color/)
+  assert.match(picker, /app-dialog app-dialog--lg/)
+  assert.match(picker, /--primary-color/)
+  assert.doesNotMatch(picker, /pickerStyle|useThemeVars\(\)/)
 })

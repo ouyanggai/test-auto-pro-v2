@@ -160,7 +160,7 @@ function patchText(patch: PathConfigurationBranchPatch): string {
   gap: 4px;
   padding-bottom: 8px;
   margin-bottom: 8px;
-  border-bottom: 1px solid var(--n-border-color, #eee);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .form-hints__view-label {

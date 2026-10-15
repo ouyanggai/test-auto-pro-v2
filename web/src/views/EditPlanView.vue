@@ -191,7 +191,7 @@ onBeforeUnmount(() => loadController?.abort())
 .form-content { width: min(100%, 960px); margin: 0 auto; padding: 8px 0 40px; }
 .page-heading { margin-bottom: 32px; }
 .page-heading h1 { margin: 0 0 10px; font-size: 28px; font-weight: 600; line-height: 1.25; }
-.page-heading p { margin: 0; color: var(--n-text-color-2); line-height: 1.7; }
+.page-heading p { margin: 0; color: var(--text-color-2); line-height: 1.7; }
 .edit-plan-loading, .edit-plan-error { padding: 80px 0; text-align: center; }
 .edit-plan-error { display: flex; justify-content: center; gap: 16px; align-items: center; }
 .schedule-switch { display: flex; align-items: center; gap: 12px; min-height: 34px; }

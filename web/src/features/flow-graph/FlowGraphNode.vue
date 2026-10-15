@@ -160,7 +160,7 @@ const displayAuditPeople = computed(() => {
   align-content: center;
   justify-items: center;
   gap: 3px;
-  border-radius: 4px;
+  border-radius: var(--ta-radius-node);
   white-space: normal;
 }
 
@@ -172,31 +172,31 @@ const displayAuditPeople = computed(() => {
 
 .flow-node--configuration {
   position: relative;
-  color: var(--flow-label-color);
+  color: var(--text-color-2);
   cursor: pointer;
-  background: var(--flow-surface-color);
-  border: 1px solid var(--flow-edge-color);
-  transition: border-color 120ms ease, background-color 120ms ease, transform 120ms ease;
+  background: var(--ta-reading);
+  border: 1px solid var(--border-color);
+  transition: border-color 160ms var(--ta-ease), background-color 160ms var(--ta-ease), box-shadow 160ms var(--ta-ease);
 }
 
 .flow-node--configuration:hover:not(:disabled),
 .flow-node--configuration:focus-visible,
 .flow-node--configuration-selected {
-  border-color: var(--flow-direction-color);
+  border-color: var(--primary-color);
   outline: none;
 }
 
 .flow-node--configuration:hover:not(:disabled) {
-  transform: translateY(-2px);
+  box-shadow: var(--ta-shadow-1);
 }
 
 .flow-node--configuration:focus-visible {
-  outline: 2px solid var(--flow-direction-color);
+  outline: 2px solid var(--primary-color);
   outline-offset: 2px;
 }
 
 .flow-node--configuration-selected {
-  background: color-mix(in srgb, var(--flow-direction-color) 9%, var(--flow-surface-color));
+  background: color-mix(in srgb, var(--primary-color) 9%, var(--ta-reading));
   border-width: 2px;
 }
 
@@ -211,16 +211,16 @@ const displayAuditPeople = computed(() => {
   bottom: 7px;
   width: 8px;
   height: 8px;
-  background: var(--flow-edge-color);
-  border: 2px solid var(--flow-surface-color);
+  background: var(--border-color);
+  border: 2px solid var(--ta-reading);
   border-radius: 50%;
 }
 
-.flow-node__configuration-status--configured { background: var(--success-color, #18a058); }
+.flow-node__configuration-status--configured { background: var(--success-color); }
 .flow-node__configuration-status--pending,
-.flow-node__configuration-status--partial { background: var(--warning-color, #f0a020); }
-.flow-node__configuration-status--affected { background: var(--error-color, #d03050); }
-.flow-node__configuration-status--runtime { background: var(--info-color, #2080f0); }
+.flow-node__configuration-status--partial { background: var(--warning-color); }
+.flow-node__configuration-status--affected { background: var(--error-color); }
+.flow-node__configuration-status--runtime { background: var(--info-color); }
 
 .flow-node__form-entry {
   position: absolute;
@@ -231,26 +231,26 @@ const displayAuditPeople = computed(() => {
   width: 26px;
   height: 26px;
   padding: 0;
-  color: var(--flow-label-color);
+  color: var(--text-color-2);
   font-size: 12px;
   cursor: pointer;
-  background: var(--flow-surface-color);
-  border: 1px solid var(--flow-edge-color);
+  background: var(--ta-reading);
+  border: 1px solid var(--border-color);
   border-radius: 50%;
   place-items: center;
 }
 
 .flow-node__form-entry:hover,
 .flow-node__form-entry:focus-visible {
-  border-color: var(--flow-direction-color);
-  outline: 2px solid color-mix(in srgb, var(--flow-direction-color) 34%, transparent);
+  border-color: var(--primary-color);
+  outline: 2px solid color-mix(in srgb, var(--primary-color) 34%, transparent);
 }
 
-.flow-node__form-entry--valid { color: var(--success-color, #18a058); }
+.flow-node__form-entry--valid { color: var(--success-color); }
 .flow-node__form-entry--affected,
-.flow-node__form-entry--unsupported { color: var(--error-color, #d03050); }
+.flow-node__form-entry--unsupported { color: var(--error-color); }
 .flow-node__form-entry--empty,
-.flow-node__form-entry--draft { color: var(--warning-color, #f0a020); }
+.flow-node__form-entry--draft { color: var(--warning-color); }
 
 .flow-node__form-configured-badge {
   position: absolute;
@@ -258,11 +258,11 @@ const displayAuditPeople = computed(() => {
   left: 50%;
   z-index: 2;
   padding: 1px 8px;
-  color: #fff;
+  color: var(--ta-on-status);
   font-size: 11px;
   line-height: 16px;
   white-space: nowrap;
-  background: var(--success-color, #18a058);
+  background: var(--success-color);
   border-radius: 9px;
   transform: translateX(-50%);
 }
@@ -290,7 +290,7 @@ const displayAuditPeople = computed(() => {
   display: -webkit-box;
   max-width: 150px;
   overflow: hidden;
-  color: var(--flow-secondary-label-color, #777);
+  color: var(--text-color-3);
   font-size: 11px;
   line-height: 1.25;
   text-align: center;
@@ -300,7 +300,7 @@ const displayAuditPeople = computed(() => {
 }
 
 .flow-node__people--empty {
-  color: var(--n-text-color-3, rgba(120, 120, 120, 0.75));
+  color: var(--text-color-3);
   font-style: italic;
 }
 
@@ -319,12 +319,12 @@ const displayAuditPeople = computed(() => {
   align-content: center;
   justify-items: center;
   gap: 2px;
-  color: var(--flow-label-color);
+  color: var(--text-color-2);
   cursor: pointer;
-  background: var(--flow-surface-color);
-  border: 1px solid var(--flow-edge-color);
-  border-radius: 8px;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 6%);
+  background: var(--ta-reading);
+  border: 1px solid var(--border-color);
+  border-radius: var(--ta-radius-node);
+  box-shadow: var(--ta-shadow-1);
   /* 运行画布只让当前步亮起来，其余节点整体压暗：读图时视线自然落在正在跑的那一步。 */
   opacity: 0.56;
   /* 状态切换平滑过渡：不闪烁、不跳变，位置与尺寸永不动画。 */
@@ -334,42 +334,42 @@ const displayAuditPeople = computed(() => {
 /* 九个中文运行态各有视觉档：颜色之外节点上必须有中文文字（run-status），不靠颜色单独表意。 */
 .flow-node--run-not_started { border-style: dashed; opacity: 0.4; }
 .flow-node--run-waiting { border-style: dashed; }
-.flow-node--run-running { border-color: var(--info-color, #2080f0); }
-.flow-node--run-running .flow-node__run-status { color: var(--info-color, #2080f0); }
-.flow-node--run-verifying { border-color: var(--info-color, #2080f0); border-style: dotted; }
-.flow-node--run-verifying .flow-node__run-status { color: var(--info-color, #2080f0); }
+.flow-node--run-running { border-color: var(--info-color); }
+.flow-node--run-running .flow-node__run-status { color: var(--info-color); }
+.flow-node--run-verifying { border-color: var(--info-color); border-style: dotted; }
+.flow-node--run-verifying .flow-node__run-status { color: var(--info-color); }
 .flow-node--run-completed {
-  border-color: color-mix(in srgb, var(--success-color, #18a058) 55%, transparent);
+  border-color: color-mix(in srgb, var(--success-color) 55%, transparent);
   opacity: 0.7;
 }
-.flow-node--run-completed .flow-node__run-status { color: var(--success-color, #18a058); }
+.flow-node--run-completed .flow-node__run-status { color: var(--success-color); }
 /* 驳回/不同意状态以醒目红色呈现，清晰表达流程被打回，不显示为正常通过的绿色。 */
 .flow-node--run-rejected {
-  border-color: var(--error-color, #d03050);
+  border-color: var(--error-color);
   border-width: 2px;
   opacity: 1;
 }
-.flow-node--run-rejected .flow-node__run-status { color: var(--error-color, #d03050); }
+.flow-node--run-rejected .flow-node__run-status { color: var(--error-color); }
 /* 失败与结果待确认不压暗：出问题的节点必须一眼看到，压暗等于把故障藏起来。 */
 .flow-node--run-failed {
-  border-color: var(--error-color, #d03050);
+  border-color: var(--error-color);
   border-width: 2px;
   opacity: 1;
 }
-.flow-node--run-failed .flow-node__run-status { color: var(--error-color, #d03050); }
+.flow-node--run-failed .flow-node__run-status { color: var(--error-color); }
 .flow-node--run-awaiting_reconciliation {
-  border-color: var(--error-color, #d03050);
+  border-color: var(--error-color);
   border-width: 2px;
   border-style: double;
   opacity: 1;
 }
-.flow-node--run-awaiting_reconciliation .flow-node__run-status { color: var(--error-color, #d03050); }
-.flow-node--run-paused { border-color: var(--warning-color, #f0a020); opacity: 0.86; }
-.flow-node--run-paused .flow-node__run-status { color: var(--warning-color, #f0a020); }
+.flow-node--run-awaiting_reconciliation .flow-node__run-status { color: var(--error-color); }
+.flow-node--run-paused { border-color: var(--warning-color); opacity: 0.86; }
+.flow-node--run-paused .flow-node__run-status { color: var(--warning-color); }
 .flow-node--run-stopped,
 .flow-node--run-cancelled { opacity: 0.6; }
 .flow-node--run-stopped .flow-node__run-status,
-.flow-node--run-cancelled .flow-node__run-status { color: var(--warning-color, #f0a020); }
+.flow-node--run-cancelled .flow-node__run-status { color: var(--warning-color); }
 
 /* 结束节点：只显示“结束”二字，用整块颜色表达收口结果。
    未走到 = 中性弱化；走到头 = 实心绿色高亮，一眼看出流程正常结束。 */
@@ -388,31 +388,31 @@ const displayAuditPeople = computed(() => {
   opacity: 0.55;
 }
 .flow-node--end-simple.flow-node--run-completed {
-  color: #fff !important;
-  background: var(--success-color, #18a058) !important;
-  border-color: var(--success-color, #18a058) !important;
+  color: var(--ta-on-status) !important;
+  background: var(--success-color) !important;
+  border-color: var(--success-color) !important;
   border-width: 2px;
   opacity: 1;
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--success-color, #18a058) 35%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--success-color) 35%, transparent);
 }
 .flow-node--end .flow-node__type,
 .flow-node--end .flow-node__name { color: inherit; }
 
 .flow-node--run-selected {
-  border-color: var(--flow-direction-color);
+  border-color: var(--primary-color);
   border-width: 2px;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--flow-direction-color) 16%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 16%, transparent);
 }
 
 /* 当前步是整张画布唯一的高亮节点：亮边 + 淡色底 + 外圈光环，放在状态档之后好覆盖压暗。 */
 .flow-node--run-current {
   z-index: 1;
-  color: var(--flow-label-color);
-  background: color-mix(in srgb, var(--info-color, #2080f0) 10%, var(--flow-surface-color));
-  border-color: var(--info-color, #2080f0);
+  color: var(--text-color-2);
+  background: color-mix(in srgb, var(--info-color) 10%, var(--ta-reading));
+  border-color: var(--info-color);
   border-width: 2px;
   border-style: solid;
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--info-color, #2080f0) 18%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--info-color) 18%, transparent);
   opacity: 1;
 }
 
@@ -448,12 +448,12 @@ const displayAuditPeople = computed(() => {
   max-width: 196px;
   margin-top: 4px;
   padding: 2px 8px;
-  color: var(--error-color, #d03050);
+  color: var(--error-color);
   font-size: 11px;
   line-height: 1.4;
   text-align: center;
-  background: color-mix(in srgb, var(--error-color, #d03050) 8%, var(--flow-surface-color));
-  border: 1px solid color-mix(in srgb, var(--error-color, #d03050) 36%, transparent);
+  background: color-mix(in srgb, var(--error-color) 8%, var(--ta-reading));
+  border: 1px solid color-mix(in srgb, var(--error-color) 36%, transparent);
   border-radius: 6px;
   transform: translateX(-50%);
   display: -webkit-box;
@@ -479,7 +479,7 @@ const displayAuditPeople = computed(() => {
   display: -webkit-box;
   max-width: 100%;
   overflow: hidden;
-  color: var(--flow-label-color);
+  color: var(--text-color-2);
   font-size: 11px;
   line-height: 1.35;
   text-align: center;
@@ -500,8 +500,8 @@ const displayAuditPeople = computed(() => {
   display: inline-block;
   width: 10px;
   height: 10px;
-  border: 1.5px solid color-mix(in srgb, var(--info-color, #2080f0) 28%, transparent);
-  border-top-color: var(--info-color, #2080f0);
+  border: 1.5px solid color-mix(in srgb, var(--info-color) 28%, transparent);
+  border-top-color: var(--info-color);
   border-radius: 50%;
   animation: flow-node-run-spin 720ms linear infinite;
 }
@@ -511,11 +511,11 @@ const displayAuditPeople = computed(() => {
   top: -11px;
   left: 50%;
   padding: 1px 8px;
-  color: #fff;
+  color: var(--ta-on-status);
   font-size: 11px;
   line-height: 16px;
   white-space: nowrap;
-  background: var(--info-color, #2080f0);
+  background: var(--info-color);
   border-radius: 9px;
   transform: translateX(-50%);
 }

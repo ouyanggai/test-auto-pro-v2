@@ -36,7 +36,9 @@ body,
 /* 内容区统一水平留白与侧栏宽度：顶栏上下文（返回入口）与内容区左边界共用同一组变量，
    保证「返回按钮、标题和下方内容」在侧栏展开/收起时都对齐，不针对任何分辨率硬写偏移。 */
 :root {
-  --app-content-pad-x: 48px;
+  --app-content-pad-x: clamp(24px, 3.2vw, 48px);
+  --app-content-pad-top: 32px;
+  --app-content-pad-bottom: 48px;
   --app-sidebar-width: 240px;
 }
 
@@ -54,7 +56,7 @@ body,
   left: 28px;
   flex: 0 0 auto;
   overflow: hidden;
-  color: var(--n-text-color);
+  color: var(--text-color-1);
   font-size: 17px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -77,7 +79,7 @@ body,
   display: flex;
   align-items: center;
   flex: 1 1 auto;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -127,13 +129,11 @@ body,
 
 .app-main > .n-layout-scroll-container {
   height: 100%;
-  padding: 40px var(--app-content-pad-x);
   overflow-y: auto;
 }
 
 /* 工作台页（运行详情）：内容区不留外层白边、不整页滚动，纵向分区由页面自己负责。 */
 .app-main--flush > .n-layout-scroll-container {
-  padding: 0;
   overflow: hidden;
 }
 
@@ -154,15 +154,15 @@ body,
 
 .placeholder-page h1 {
   margin: 0 0 16px;
-  color: var(--n-text-color);
-  font-size: 28px;
+  color: var(--text-color-1);
+  font-size: 24px;
   font-weight: 600;
   line-height: 1.25;
 }
 
 .placeholder-page p {
   margin: 0;
-  color: var(--n-text-color-2);
+  color: var(--text-color-2);
   line-height: 1.7;
 }
 

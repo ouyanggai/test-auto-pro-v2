@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NEmpty, NModal, NSpin, NTag, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NEmpty, NModal, NSpin, NTag } from 'naive-ui'
 import { computed } from 'vue'
 
 import { pathActionFlowParameters, pathActionFlowSegments, pathActionFlowStepName } from './logic'
@@ -17,7 +17,6 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ 'update:show': [value: boolean]; reload: [] }>()
 
-const themeVars = useThemeVars()
 
 // 三类步骤必须视觉可分：用户配置的动作、系统为了让路径继续而插入的恢复步骤、目标引擎自己的导航。
 const SOURCE_LABELS: Record<PathActionStepSource, string> = {
@@ -38,19 +37,6 @@ const userStepCount = computed(() => props.steps.filter(step => step.source === 
 const systemStepCount = computed(() => props.steps.length - userStepCount.value)
 const blockingIssues = computed(() => props.issues.filter(issue => issue.blocking))
 const advisoryIssues = computed(() => props.issues.filter(issue => !issue.blocking))
-// 宽度和颜色写在行内样式：NModal 的卡片 teleport 到 body 渲染，scoped 样式选不中它。
-const dialogStyle = computed(() => ({
-  width: '720px',
-  maxWidth: 'calc(100vw - 48px)',
-  '--flow-border-color': themeVars.value.borderColor,
-  '--flow-text-color': themeVars.value.textColor2,
-  '--flow-secondary-text-color': themeVars.value.textColor3,
-  '--flow-current-color': themeVars.value.primaryColor,
-  '--flow-current-background': themeVars.value.actionColor,
-  '--flow-user-color': themeVars.value.successColor,
-  '--flow-recovery-color': themeVars.value.warningColor,
-  '--flow-navigation-color': themeVars.value.infoColor,
-}))
 
 // sourceLabel 与 sourceTag 保证系统插入的步骤不会被显示成用户配置的动作。
 function sourceLabel(source: PathActionStepSource) {
@@ -78,12 +64,12 @@ function stepDetails(step: PathCompiledActionStep) {
 </script>
 
 <template>
-  <n-modal
+  <n-modal class="app-dialog app-dialog--md"
     :show="show"
     preset="card"
     title="动作执行流程"
     data-testid="action-flow-dialog"
-    :style="dialogStyle"
+
     :bordered="false"
     size="small"
     @update:show="value => emit('update:show', value)"
@@ -151,13 +137,13 @@ function stepDetails(step: PathCompiledActionStep) {
   gap: 10px;
   max-height: 62vh;
   overflow-y: auto;
-  color: var(--flow-text-color);
+  color: var(--text-color-2);
 }
 
 .action-flow__note {
   margin: 0;
   line-height: 1.6;
-  color: var(--flow-secondary-text-color);
+  color: var(--text-color-3);
 }
 
 .action-flow__chain,
@@ -171,7 +157,7 @@ function stepDetails(step: PathCompiledActionStep) {
 }
 
 .action-flow__group {
-  border: 1px dashed var(--flow-border-color);
+  border: 1px dashed var(--border-color);
   border-radius: 6px;
   padding: 8px 10px 10px;
   display: flex;
@@ -180,8 +166,8 @@ function stepDetails(step: PathCompiledActionStep) {
 
 .action-flow__group--current {
   border-style: solid;
-  border-color: var(--flow-current-color);
-  background: var(--flow-current-background);
+  border-color: var(--primary-color);
+  background: var(--ta-surface-2);
 }
 
 .action-flow__group-head {
@@ -193,7 +179,7 @@ function stepDetails(step: PathCompiledActionStep) {
 }
 
 .action-flow__group-count {
-  color: var(--flow-secondary-text-color);
+  color: var(--text-color-3);
 }
 
 .action-flow__step {
@@ -203,22 +189,22 @@ function stepDetails(step: PathCompiledActionStep) {
 }
 
 .action-flow__box {
-  border: 1px solid var(--flow-border-color);
+  border: 1px solid var(--border-color);
   border-left-width: 3px;
   border-radius: 4px;
   padding: 8px 10px;
 }
 
 .action-flow__box--user {
-  border-left-color: var(--flow-user-color);
+  border-left-color: var(--success-color);
 }
 
 .action-flow__box--system_recovery {
-  border-left-color: var(--flow-recovery-color);
+  border-left-color: var(--warning-color);
 }
 
 .action-flow__box--system_navigation {
-  border-left-color: var(--flow-navigation-color);
+  border-left-color: var(--info-color);
 }
 
 .action-flow__box-head {
@@ -231,22 +217,22 @@ function stepDetails(step: PathCompiledActionStep) {
 .action-flow__sequence {
   min-width: 22px;
   height: 22px;
-  border: 1px solid var(--flow-border-color);
+  border: 1px solid var(--border-color);
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--flow-secondary-text-color);
+  color: var(--text-color-3);
 }
 
 .action-flow__effect {
   margin: 4px 0 0;
-  color: var(--flow-secondary-text-color);
+  color: var(--text-color-3);
 }
 
 .action-flow__detail {
   margin-top: 6px;
-  color: var(--flow-secondary-text-color);
+  color: var(--text-color-3);
 }
 
 .action-flow__detail summary {
@@ -261,12 +247,12 @@ function stepDetails(step: PathCompiledActionStep) {
 .action-flow__detail-name {
   display: inline-block;
   min-width: 84px;
-  color: var(--flow-text-color);
+  color: var(--text-color-2);
 }
 
 .action-flow__arrow {
   align-self: center;
-  color: var(--flow-secondary-text-color);
+  color: var(--text-color-3);
   line-height: 1.2;
   padding: 2px 0;
 }

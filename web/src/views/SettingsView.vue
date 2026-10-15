@@ -6,7 +6,6 @@ import {
   NIcon,
   NSpin,
   NTag,
-  useThemeVars,
 } from 'naive-ui'
 import {
   ArrowForwardOutline,
@@ -21,7 +20,6 @@ import { fetchRuntimeSource, type RuntimeSourceState } from '../features/form-ru
 import { fetchAddSignExclusions } from '../features/add-sign-exclusion/api'
 
 const router = useRouter()
-const themeVars = useThemeVars()
 
 // 异步概览数据：用于在设置主页展示关键指标摘要
 const loadingStats = ref(true)
@@ -224,14 +222,14 @@ onMounted(() => {
   font-weight: 700;
   line-height: 1.25;
   letter-spacing: -0.01em;
-  color: var(--n-text-color);
+  color: var(--text-color-1);
 }
 
 .settings-subtitle {
   margin: 0;
   font-size: 14.5px;
   line-height: 1.65;
-  color: var(--n-text-color-3);
+  color: var(--text-color-3);
   max-width: 820px;
 }
 
@@ -250,22 +248,22 @@ onMounted(() => {
 .setting-card {
   height: 100%;
   border-radius: 14px;
-  transition: transform 0.22s cubic-bezier(0.2, 0, 0, 1), box-shadow 0.22s cubic-bezier(0.2, 0, 0, 1), border-color 0.22s ease;
+  transition: color 160ms var(--ta-ease), background-color 160ms var(--ta-ease), border-color 160ms var(--ta-ease), box-shadow 160ms var(--ta-ease);
   position: relative;
   overflow: hidden;
 }
 
 .setting-card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 12px 28px -6px rgba(0, 0, 0, 0.08), 0 4px 12px -2px rgba(0, 0, 0, 0.04);
+
+  box-shadow: var(--ta-shadow-1);
 }
 
 .setting-card--primary:hover {
-  border-color: v-bind('themeVars.primaryColorHover');
+  border-color: var(--primary-color);
 }
 
 .setting-card--amber:hover {
-  border-color: v-bind('themeVars.warningColorHover');
+  border-color: var(--warning-color);
 }
 
 .setting-card__body {
@@ -293,13 +291,13 @@ onMounted(() => {
 }
 
 .setting-icon-box--blue {
-  background: rgba(32, 128, 240, 0.12);
-  color: #2080f0;
+  background: color-mix(in srgb, var(--info-color) 12%, transparent);
+  color: var(--info-color);
 }
 
 .setting-icon-box--amber {
-  background: rgba(240, 160, 32, 0.14);
-  color: #f0a020;
+  background: color-mix(in srgb, var(--warning-color) 14%, transparent);
+  color: var(--warning-color);
 }
 
 .setting-card__title-group {
@@ -313,14 +311,14 @@ onMounted(() => {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--n-text-color-3);
+  color: var(--text-color-3);
 }
 
 .setting-card__title {
   margin: 0;
   font-size: 19px;
   font-weight: 600;
-  color: var(--n-text-color);
+  color: var(--text-color-1);
   line-height: 1.3;
 }
 
@@ -328,14 +326,14 @@ onMounted(() => {
   margin: 0;
   font-size: 13.5px;
   line-height: 1.6;
-  color: var(--n-text-color-2);
+  color: var(--text-color-2);
   flex-grow: 1;
 }
 
 /* 状态概览条 */
 .setting-card__status-bar {
-  background: v-bind('themeVars.actionColor');
-  border: 1px solid v-bind('themeVars.borderColor');
+  background: var(--ta-surface-2);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 8px 12px;
   min-height: 42px;
@@ -349,11 +347,11 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   font-size: 12.5px;
-  color: var(--n-text-color-2);
+  color: var(--text-color-2);
 }
 
 .status-summary--placeholder {
-  color: var(--n-text-color-3);
+  color: var(--text-color-3);
 }
 
 .status-chip {
@@ -367,7 +365,7 @@ onMounted(() => {
 }
 
 .status-divider {
-  color: var(--n-text-color-3);
+  color: var(--text-color-3);
   font-weight: 300;
 }
 
@@ -385,38 +383,38 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   padding-top: 4px;
-  border-top: 1px dashed v-bind('themeVars.borderColor');
+  border-top: 1px dashed var(--border-color);
 }
 
 .setting-card__action-text {
   font-size: 13.5px;
   font-weight: 500;
-  color: var(--n-text-color-2);
+  color: var(--text-color-2);
   transition: color 0.15s ease;
 }
 
 .setting-card:hover .setting-card__action-text {
-  color: v-bind('themeVars.primaryColor');
+  color: var(--primary-color);
 }
 
 .setting-card__action-btn {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: v-bind('themeVars.actionColor');
-  border: 1px solid v-bind('themeVars.borderColor');
+  background: var(--ta-surface-2);
+  border: 1px solid var(--border-color);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--n-text-color-2);
-  transition: all 0.2s ease;
+  color: var(--text-color-2);
+  transition: color 160ms var(--ta-ease), background-color 160ms var(--ta-ease), border-color 160ms var(--ta-ease), box-shadow 160ms var(--ta-ease);
 }
 
 .setting-card:hover .setting-card__action-btn {
-  background: v-bind('themeVars.primaryColor');
-  color: #fff;
-  border-color: v-bind('themeVars.primaryColor');
-  transform: translateX(3px);
+  background: var(--primary-color);
+  color: var(--ta-on-primary);
+  border-color: var(--primary-color);
+
 }
 
 /* 响应式适配 */

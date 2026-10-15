@@ -17,12 +17,14 @@ const requireText = (source, expected, label) => {
 }
 
 const store = read('web/src/stores/app.ts')
-requireText(store, "export type ThemeMode = 'light' | 'dark'", '主题状态')
-requireText(store, "const themeStorageKey = 'test-auto-pro-theme'", '主题持久化')
-requireText(store, "getItem(themeStorageKey) === 'dark' ? 'dark' : 'light'", '主题默认值')
-requireText(store, "themeMode: loadThemeMode() as ThemeMode", '主题初始化')
+const preferences = read('web/src/appearance/preferences.ts')
+const tokens = read('web/src/appearance/skins.ts')
+requireText(tokens, "export type ThemeMode = 'light' | 'dark'", '主题状态')
+requireText(preferences, "const themeStorageKey = 'test-auto-pro-theme'", '主题持久化')
+requireText(preferences, "getItem(themeStorageKey) === 'dark' ? 'dark' : 'light'", '主题默认值')
+requireText(store, "themeMode: readThemeMode(browserStorage())", '主题初始化')
 requireText(store, "toggleThemeMode()", '主题切换')
-requireText(store, "setItem(themeStorageKey, this.themeMode)", '主题持久化')
+requireText(store, "writePreference(themeStorageKey, mode)", '主题持久化')
 
 const app = read('web/src/App.vue')
 requireText(app, 'NConfigProvider, NGlobalStyle, NLayout, NLayoutContent, NLayoutHeader, NLayoutSider', '主题与布局组件')
@@ -39,7 +41,7 @@ requireText(app, 'collapse-mode="width"', '侧栏收缩模式')
 requireText(app, 'show-trigger="arrow-circle"', '侧栏圆形收缩触发器')
 requireText(app, ':collapsed-width="0"', '侧栏收缩宽度')
 requireText(app, ':show-collapsed-content="false"', '收缩菜单内容')
-requireText(app, '<n-layout-content class="app-main" native-scrollbar>', '官方主内容布局')
+requireText(app, '<n-layout-content class="app-main" :class="{ \'app-main--flush\': flushContent }" native-scrollbar>', '官方主内容布局')
 if (app.includes('项目初始化')) {
   throw new Error('应用壳不应出现“项目初始化”状态文字')
 }
