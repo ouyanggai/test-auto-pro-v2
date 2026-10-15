@@ -15,11 +15,11 @@ test('动作弹窗只渲染一次有序请求清单，不列同节点其他操�
   assert.match(panel, /copyTraceID\(req\.traceId\)/)
 })
 
-test('长错误和日志内容可滚动，窄窗口能换行，不渲染 HTTP 0', () => {
+test('动作详情限制弹窗尺寸，长错误能换行，不渲染 HTTP 0', () => {
   assert.match(panel, /run-panel__dialog app-dialog app-dialog--lg/)
   assert.match(layout, /max-width: calc\(100vw - 48px\)/)
   assert.match(layout, /max-height: calc\(100dvh - 96px\)/)
-  assert.match(layout, /\.app-dialog\.n-card > \.n-card__content[^}]*overflow: auto/s)
+  // 正文滚动由 appearance 用真实 Naive 渲染结构验证，不在这里重复猜组件内部类名。
   assert.match(panel, /white-space: pre-wrap/)
   assert.match(panel, /overflow-wrap: anywhere/)
   assert.match(panel, /req\.statusCode > 0/)

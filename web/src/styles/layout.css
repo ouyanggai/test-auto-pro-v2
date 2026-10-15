@@ -40,7 +40,8 @@ body { font-size: 14px; line-height: 22px; }
 .app-dialog--md { --dialog-w: 760px; }
 .app-dialog--lg { --dialog-w: 960px; }
 .app-dialog.n-card > .n-card-header { flex: none; padding: 20px 24px 16px; border-bottom: 1px solid var(--divider-color); }
-.app-dialog.n-card > .n-card__content { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 20px 24px; }
+/* Naive 正文实际类名为 n-card-content；允许它收缩并滚动，长列表才不会撑出卡片并挤走底部操作。 */
+.app-dialog.n-card > .n-card-content { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 20px 24px; }
 .app-dialog.n-card > .n-card__footer { flex: none; padding: 16px 24px; border-top: 1px solid var(--divider-color); }
 .app-dialog.n-card > .n-card__action { flex: none; padding: 16px 24px; border-top: 1px solid var(--divider-color); background: var(--ta-surface-2); }
 .app-dialog.n-dialog { padding: 0; }

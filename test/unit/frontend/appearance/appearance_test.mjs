@@ -176,8 +176,66 @@ test('11 处现有弹窗都有统一尺寸，尺寸和滚动只由全局规则�
   assert.equal(count, 11)
   const layout = read('web/src/styles/layout.css')
   assert.match(layout, /max-height: calc\(100dvh - 96px\)/)
-  assert.match(layout, /\.n-card__content[^}]*min-height: 0;[^}]*overflow: auto/)
-  assert.match(layout, /\.n-card__footer[^}]*flex: none/)
+})
+
+test('八种外观的真实卡片与确认框都命中正文滚动和固定操作区规则', async () => {
+  const { createSSRApp, h } = requireWeb('vue')
+  const { renderToString } = requireWeb('vue/server-renderer')
+  const { NCard, NDialog, NConfigProvider, darkTheme } = requireWeb('naive-ui')
+  const { parse } = requireWeb('vue/compiler-sfc')
+  const postcss = createRequire(requireWeb.resolve('vite'))('postcss')
+  const css = postcss.parse(read('web/src/styles/layout.css'))
+  const attr = (node, name) => node.props?.find(prop => prop.type === 6 && prop.name === name)?.value?.content
+  const matches = (node, selector) => /^(?:\.[\w-]+)+$/.test(selector)
+    && selector.slice(1).split('.').every(name => (attr(node, 'class') ?? '').split(/\s+/).includes(name))
+  // 用真实组件生成的节点匹配直接子级规则，避免测试和样式一起把内部类名写错。
+  const declarations = (root, child) => {
+    const values = {}
+    css.walkRules(rule => {
+      const matched = rule.selectors.some(selector => {
+        const parts = selector.split('>').map(part => part.trim())
+        return child
+          ? parts.length === 2 && matches(root, parts[0]) && matches(child, parts[1])
+          : parts.length === 1 && matches(root, parts[0])
+      })
+      if (matched) rule.walkDecls(declaration => { values[declaration.prop] = declaration.value })
+    })
+    return values
+  }
+  const containsRegion = (node, region) => attr(node, 'data-probe-region') === region
+    || (node.children ?? []).some(child => containsRegion(child, region))
+  const findFrame = node => matches(node, '.app-dialog') ? node : (node.children ?? []).map(findFrame).find(Boolean)
+  for (const skin of skinCatalog) for (const mode of modes) {
+    for (const [component, regions] of [[NCard, ['header', 'content', 'footer', 'action']], [NDialog, ['header', 'content', 'action']]]) {
+      const marker = region => h(region === 'action' || region === 'footer' ? 'button' : 'div', { 'data-probe-region': region },
+        region === 'content' ? Array.from({ length: 20 }, (_, index) => h('p', '业务数据 ' + index + ' · 较长标题'.repeat(12))) : region)
+      const slots = Object.fromEntries(regions.map(region => [region === 'content' ? 'default' : region, () => marker(region)]))
+      const html = await renderToString(createSSRApp({ render: () => h(NConfigProvider, {
+        theme: mode === 'dark' ? darkTheme : null,
+        themeOverrides: buildThemeOverrides(skin.id, mode),
+      }, { default: () => h(component, { class: 'app-dialog app-dialog--lg' }, slots) }) }))
+      const root = findFrame(parse('<template>' + html + '</template>').descriptor.template.ast)
+      assert.ok(root, component.name + ' 未生成弹窗主体')
+      const frame = declarations(root)
+      assert.equal(frame.display, 'flex')
+      assert.equal(frame['flex-direction'], 'column')
+      assert.equal(frame['max-height'], 'calc(100dvh - 96px)')
+      for (const region of regions) {
+        const node = root.children.find(child => child.type === 1 && containsRegion(child, region))
+        assert.ok(node, component.name + ' 缺少区域 ' + region)
+        const styles = declarations(root, node)
+        const context = skin.id + '/' + mode + '/' + component.name + '/' + region
+        if (region === 'content') {
+          assert.equal(styles['min-height'], '0', context + ' 正文必须允许收缩')
+          assert.equal(styles.overflow, 'auto', context + ' 长列表必须在正文内滚动')
+          assert.equal(styles.flex, '1 1 auto', context)
+          assert.equal(styles.padding, '20px 24px', context)
+        } else {
+          assert.equal(styles.flex, 'none', context + ' 标题与操作区不得被压缩')
+        }
+      }
+    }
+  }
 })
 
 test('颜色只来自令牌，唯一例外是八条首屏底色与原生表单白底', () => {

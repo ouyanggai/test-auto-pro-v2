@@ -614,7 +614,7 @@ export function startPointerGlow(spot: HTMLElement): () => void {
 .app-dialog--lg { --dialog-w: 960px; }
 /* preset="card" 与裸 n-card */
 .app-dialog > .n-card-header { flex: none; padding: 20px 24px 16px; border-bottom: 1px solid var(--divider-color); }
-.app-dialog > .n-card__content { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 20px 24px; }
+.app-dialog > .n-card-content { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 20px 24px; }
 .app-dialog > .n-card__footer { flex: none; padding: 16px 24px; border-top: 1px solid var(--divider-color); }
 /* preset="dialog" */
 .app-dialog.n-dialog { padding: 0; }
@@ -622,6 +622,8 @@ export function startPointerGlow(spot: HTMLElement): () => void {
 .app-dialog .n-dialog__content { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 20px 24px; margin: 0; }
 .app-dialog .n-dialog__action { flex: none; padding: 16px 24px; border-top: 1px solid var(--divider-color); }
 ```
+
+2026-10-15 人工反馈修正：当前 Naive 2.44.1 的卡片正文类名是 `n-card-content`，页脚才是 `n-card__footer`，不能按同一种命名格式猜。正文必须命中上面的收缩和滚动规则，否则长列表会超出弹窗。回归检查用真实 NCard/NDialog 渲染结果核对直接子级样式，不再只断言源码里存在某段选择器；确认框继续使用其实际的 `n-dialog__content`。
 
 弹窗内的 `pre`、原始请求/响应、长错误统一：`font-family: var(--font-family-mono); font-size: 12px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--ta-reading); border: 1px solid var(--divider-color); border-radius: var(--ta-radius-control); padding: 12px; user-select: text;`，**不加 `text-overflow`、不加行数截断**。
 
