@@ -88,6 +88,8 @@ F-030 只在现有执行器、会话协调器、目标传输日志和运行详�
 
 ## F-049 主题与界面边界
 
+2026-10-15 副作用复查补充：按钮通过 buildThemeOverrides 的正式主题字段单独派生各交互色和浅底透明度，正文、卡片、工具条、弹窗底色都纳入真实组件对比检查；不为修按钮更改全局令牌、节点或图表颜色。默认皮肤继续返回 undefined。App 状态保持以真实 Vue/RouterView 内存运行补充验证，CSS 尺寸与视觉仍由用户浏览器核对。
+
 用户于 2026-10-15 授权极光、钛金只在前端彻底重做，现已完成并重新停在 `ready_for_manual`。StudioNavigation.vue 用原地址目录 navigation.ts 提供专用导航，studioMotion.ts 负责原生 Web Animations、单表面指针反馈和弹簧曲线，studio.css 收口两套布局与材质；未新增动画依赖。两套旧样式已直接删除，默认与深空保持本轮开始时的样式和令牌值。不调整后端、数据库、执行器或目标表单运行时。
 
 - 在现有 `web/src/stores/app.ts` 中增加 `SkinId = default | deep-space | aurora | titanium`，使用独立的浏览器存储键 `test-auto-pro-skin`；缺省为 `default`。继续沿用现有 `ThemeMode = light | dark` 和 `test-auto-pro-theme`，不把皮肤与深浅偏好合并成八个存储值。

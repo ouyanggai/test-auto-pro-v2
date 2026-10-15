@@ -99,6 +99,47 @@ test('新主题覆盖悬停按下色、阅读面和实心按钮文字，不混�
   }
 })
 
+test('真实 Naive 六类按钮在悬停、聚焦和按下时都保持文字可读', async context => {
+  const { createSSRApp, h } = requireWeb('vue')
+  const { renderToString } = requireWeb('vue/server-renderer')
+  const { NButton, NConfigProvider, darkTheme } = requireWeb('naive-ui')
+  // 读取真正按钮使用的变量，覆盖组件库派生和主题覆盖，避免只验证基础令牌。
+  const variants = [{}, { ghost: true }, { text: true }, { secondary: true }, { tertiary: true }, { quaternary: true }]
+  const failures = []
+  let minimum = Infinity
+  const composite = (color, behind) => {
+    if (['transparent', '#0000'].includes(color)) return behind
+    const [r, g, b, alpha] = parseColor(color), base = parseColor(behind)
+    return 'rgb(' + [r, g, b].map((value, index) => Math.round(value * alpha + base[index] * (1 - alpha))).join(', ') + ')'
+  }
+  for (const skin of skinCatalog.slice(1)) for (const mode of modes) {
+    const t = skinTokens[skin.id][mode]
+    const html = await renderToString(createSSRApp({ render: () => h(NConfigProvider, {
+      theme: mode === 'dark' ? darkTheme : null,
+      themeOverrides: buildThemeOverrides(skin.id, mode),
+    }, () => ['primary', 'info', 'success', 'warning', 'error'].flatMap(type => variants.map((variant, index) =>
+      h(NButton, { type, ...variant, 'data-probe': type + '/' + index }, () => '确认操作'),
+    ))) }))
+    const buttons = [...html.matchAll(/<button\b([^>]*)>/g)]
+    assert.equal(buttons.length, 30)
+    for (const [, attributes] of buttons) {
+      const styles = Object.fromEntries(attributes.match(/style="([^"]*)"/)[1].split(';').filter(Boolean).map(value => {
+        const separator = value.indexOf(':')
+        return [value.slice(0, separator), value.slice(separator + 1)]
+      }))
+      const label = skin.id + '/' + mode + '/' + attributes.match(/data-probe="([^"]*)"/)[1]
+      for (const surface of ['reading', 'raised', 'surface', 'surface2']) for (const state of ['', '-hover', '-focus', '-pressed']) {
+        const background = composite(styles['--n-color' + state], t[surface])
+        const score = contrast(composite(styles['--n-text-color' + state], background), background)
+        minimum = Math.min(minimum, score)
+        if (score < 4.5) failures.push(label + '/' + surface + (state || '/normal') + ' 对比度 ' + score.toFixed(2))
+      }
+    }
+  }
+  assert.equal(failures.length, 0, failures.slice(0, 16).join('\n'))
+  context.diagnostic('6 套新配色 × 5 种语义 × 6 类按钮 × 4 种背景 × 4 种状态，最低对比度 ' + minimum.toFixed(2) + ':1')
+})
+
 test('全局变量作用在同一个根元素，不改动业务对象或重建页面', () => {
   const writes = new Map()
   const root = { dataset: {}, style: { setProperty: (key, value) => writes.set(key, value) } }
