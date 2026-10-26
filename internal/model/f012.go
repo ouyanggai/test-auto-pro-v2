@@ -172,7 +172,7 @@ type HistoryReplayJob struct {
 	LeaseExpiresAt *time.Time `json:"-"`
 	FencingToken   uint64     `json:"-"`
 	// ActionMode 是本任务的一键配置动作模式（approve_only|random），随任务持久化供 worker 与重启恢复读取。
-	ActionMode string `json:"-"`
+	ActionMode string `json:"actionMode"`
 }
 
 // HistoryReplayItem 是任务内单路径检查点和回放结果。

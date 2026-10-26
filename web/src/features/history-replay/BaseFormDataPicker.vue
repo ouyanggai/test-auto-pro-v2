@@ -160,6 +160,7 @@ onBeforeUnmount(() => {
   <n-modal :show="show" @update:show="value => emit('update:show', value)">
     <n-card class="base-form-data-picker app-dialog app-dialog--lg" data-testid="base-form-data-picker" title="选择基础表单数据" :aria-busy="loading">
       <div class="base-form-data-picker__body">
+        <slot name="preparation" />
         <n-radio-group v-if="scope === 'path'" v-model:value="pathMode" size="small">
           <n-radio-button value="default">沿用计划统一数据</n-radio-button>
           <n-radio-button value="override">本路径单独指定</n-radio-button>

@@ -89,7 +89,7 @@ func (s *PathConfigService) saveActionConfigurationOnce(ctx context.Context, pla
 	if found {
 		existing = decodeWorkspaceActions(current.UserActions)
 	}
-	validation, err := s.pathActionGates(snapshot, path, analysis, found)
+	configuration, validation, err := s.pathActionContext(snapshot, path, analysis, found)
 	if err != nil {
 		return model.ActionConfigurationResult{}, err
 	}
@@ -164,8 +164,6 @@ func (s *PathConfigService) saveActionConfigurationOnce(ctx context.Context, pla
 	record.ActionRevision = current.ActionRevision + 1
 	record.NodeRevision = current.NodeRevision + 1
 	record.Revision = current.Revision + 1
-	record.ConfigStatus = actionConfigStatus(len(compiled.Actions))
-	record.NodeStatus = record.ConfigStatus
 	if strings.TrimSpace(record.SourceMode) == "" {
 		record.SourceMode = model.HistorySourceModeNone
 	}
@@ -190,6 +188,7 @@ func (s *PathConfigService) saveActionConfigurationOnce(ctx context.Context, pla
 	if err != nil {
 		return model.ActionConfigurationResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "已确认节点无法编码"}
 	}
+	applyStoredActionConfigurationStatus(&record, configuration)
 	if len(record.EffectiveFormData) == 0 {
 		record.EffectiveFormData = []byte(`{}`)
 	}
@@ -212,14 +211,20 @@ func (s *PathConfigService) saveActionConfigurationOnce(ctx context.Context, pla
 
 // pathActionGates 重读当前真实路径的动作门禁与人员目录投影，保存和预览共用同一份事实。
 func (s *PathConfigService) pathActionGates(snapshot target.PathConfigurationSnapshot, path model.ExecutionPath, analysis ownedPathAnalysis, found bool) (analyzer.PathConfigValidation, error) {
+	_, validation, err := s.pathActionContext(snapshot, path, analysis, found)
+	return validation, err
+}
+
+// pathActionContext 从同一份目标快照生成配置进度与动作门禁，避免保存状态和运行内容各算一套。
+func (s *PathConfigService) pathActionContext(snapshot target.PathConfigurationSnapshot, path model.ExecutionPath, analysis ownedPathAnalysis, found bool) (model.PathConfiguration, analyzer.PathConfigValidation, error) {
 	if s.configAnalyzer == nil {
-		return analyzer.PathConfigValidation{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "动作条件校验服务暂不可用"}
+		return model.PathConfiguration{}, analyzer.PathConfigValidation{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "动作条件校验服务暂不可用"}
 	}
-	_, validation, err := s.configAnalyzer.Analyze(analysis.graph, snapshot.Tree, snapshot.FormFields, path, analysis.pathAnalysis, snapshot.InstanceValues, map[string]map[string]string{}, map[string]string{}, found)
+	configuration, validation, err := s.configAnalyzer.Analyze(analysis.graph, snapshot.Tree, snapshot.FormFields, path, analysis.pathAnalysis, snapshot.InstanceValues, map[string]map[string]string{}, map[string]string{}, found)
 	if err != nil {
-		return analyzer.PathConfigValidation{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前路径动作条件无法核对"}
+		return model.PathConfiguration{}, analyzer.PathConfigValidation{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前路径动作条件无法核对"}
 	}
-	return validation, nil
+	return configuration, validation, nil
 }
 
 // actionCatalogGates 汇总全部配置位置的动作门禁项，按稳定键排序供场景编译器逐条复验。
@@ -826,7 +831,7 @@ func semanticNodePositions(graph model.FlowGraph, analysis model.ExecutionPathAn
 func actionConfigurationResult(path model.ExecutionPath, stored repository.HistoryPathConfigRecord, compiled scenario.Result) model.ActionConfigurationResult {
 	status := strings.TrimSpace(stored.ConfigStatus)
 	if status == "" {
-		status = actionConfigStatus(len(compiled.Actions))
+		status = "pending"
 	}
 	return model.ActionConfigurationResult{
 		Path: model.PathConfigPath{SequenceNo: path.SequenceNo, Name: path.Name}, Revision: stored.Revision,
@@ -836,12 +841,15 @@ func actionConfigurationResult(path model.ExecutionPath, stored repository.Histo
 	}
 }
 
-// actionConfigStatus 从动作编译成功与否派生路径节点配置状态。
-func actionConfigStatus(count int) string {
-	if count == 0 {
-		return "pending"
+// applyStoredActionConfigurationStatus 按全部节点确认进度派生落盘状态，默认提交/同意也是有效场景。
+// 有额外动作不能代替其余节点的确认；没有额外动作也不能否定已确认且可编译的默认场景。
+func applyStoredActionConfigurationStatus(record *repository.HistoryPathConfigRecord, configuration model.PathConfiguration) {
+	applyConfirmedNodeState(&configuration, decodeConfirmedNodeKeys(record.ConfirmedNodeKeys), decodeHistoryPersonStrategies(record.PersonStrategies))
+	status := derivePathConfigurationStatus(configuration)
+	if len(decodeWorkspaceSteps(record.CompiledSteps)) == 0 {
+		status = "pending"
 	}
-	return "configured"
+	record.ConfigStatus, record.NodeStatus = status, status
 }
 
 // compileIssues 从纯编译错误中复制结构化首个阻断列表。
@@ -1250,10 +1258,10 @@ func autoCandidateDisabledReason(item model.PathConfigActionCatalogItem) string 
 	return "当前动作执行条件不满足"
 }
 
-// AutoConfigurePathActions 一键配置时按真实门禁为路径上待配置节点补齐人员与"固定尾动作之外"的一条额外动作（F-034 T02）。
+// AutoConfigurePathActions 按明确选择准备纯提交/同意方案，或为节点补齐人员和一条额外随机动作。
 // 边界：
 //  1. 只读取一次目标事实、只写一次配置行；逐节点调用保存接口会对同一账号发起十几次目标读取，把只读网关打满。
-//  2. 已有人工动作、参数和人员策略原样保留；只有没有额外用户动作的节点才补一条。
+//  2. 随机方案保留人工动作；快速同意方案明确替换额外动作，只保留当前节点主处理人策略与表单。
 //  3. 固定尾动作（提交/同意/重新提交）由编译器生成，不计入额外动作；旧版一键配置写入的固定尾占位记录
 //     按稳定键准确识别并清除，不靠动作名称猜测。
 //  4. 候选先套目标静态动作矩阵（发起节点仅保存草稿；审批节点暂存/加签/移交/不同意/回退/取回；
@@ -1283,14 +1291,7 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 		planAccount = strings.TrimSpace(plan.Account)
 	}
 	// 节点、人员和动作目录直接从这次已经读到的目标事实投影，不再额外读一遍目标流程。
-	configuration, _, err := s.configAnalyzer.Analyze(
-		analysis.graph, snapshot.Tree, snapshot.FormFields, path, analysis.pathAnalysis,
-		snapshot.InstanceValues, map[string]map[string]string{}, map[string]string{}, false,
-	)
-	if err != nil {
-		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "执行路径配置无法投影，请重新核对路径"}
-	}
-	validation, err := s.pathActionGates(snapshot, path, analysis, found)
+	configuration, validation, err := s.pathActionContext(snapshot, path, analysis, found)
 	if err != nil {
 		return err
 	}
@@ -1318,6 +1319,28 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 		personStrategies = normalizeAutoPersonStrategies(personStrategies, actions)
 	}
 	changed := clearedFixedTail
+	if approveOnly {
+		// 快速方案是显式替换所选路径的额外动作，不能让上次随机的回退、加签等动作混入本次纯同意。
+		// 节点人员仍是用户事实；只清除已移除动作的独立人员域，不接触有效表单与数据修订。
+		changed = changed || len(existing) > 0 || len(decodeWorkspaceSteps(current.CompiledSteps)) == 0
+		actions = []model.ConfiguredAction{}
+		nodePersonKeys := map[string]bool{}
+		for _, node := range validation.NodeTokens {
+			if node.Person != nil {
+				nodePersonKeys[node.Person.Key] = true
+			}
+		}
+		for key := range personStrategies {
+			if !nodePersonKeys[key] {
+				delete(personStrategies, key)
+				changed = true
+			}
+		}
+	}
+	previousConfirmed := map[string]bool{}
+	for _, key := range decodeConfirmedNodeKeys(current.ConfirmedNodeKeys) {
+		previousConfirmed[key] = true
+	}
 	confirmedNodes := make([]string, 0, 8)
 	autoConfiguredNodes := make([]string, 0, 8)
 	// F-034 评审修正：候选级失败只是诊断信息；只有业务节点没有任何可用动作才构成阻塞失败，
@@ -1337,11 +1360,22 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			pendingPersons := map[string]model.PathConfigPersonStrategyInput{}
 			personBlocked := false
 			for _, person := range node.Persons {
+				if approveOnly && (person.Mode == "review" || person.Affected) {
+					blockingRejections = append(blockingRejections, "节点 "+node.Name+" 人员规则需要处理："+firstNonEmptyText(person.Note, person.Detail, "无法确认当前处理人规则"))
+					personBlocked = true
+					continue
+				}
 				if !person.Editable {
 					continue
 				}
-				if _, alreadyConfigured := personStrategies[person.Key]; alreadyConfigured {
+				if strategy, alreadyConfigured := personStrategies[person.Key]; alreadyConfigured {
 					// 一键配置只能补齐空白人员项，人工保存的策略属于用户事实，不能被随机覆盖。
+					if approveOnly {
+						if reason := validateAutoNodePerson(person, strategy); reason != "" {
+							blockingRejections = append(blockingRejections, "节点 "+node.Name+" 已保存人员策略「"+person.Title+"」已失效（"+reason+"）")
+							personBlocked = true
+						}
+					}
 					continue
 				}
 				if person.Affected {
@@ -1405,6 +1439,11 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			// 每个可执行节点都会有一条默认同意，实例一路同意跑到底（用户裁决：快速跑通模式）。
 			if approveOnly {
 				commitPendingPersons()
+				if isConfigurableBusinessNode(node.Kind) {
+					// 固定人员、运行时规则或已有合法策略都不需要产生新人员项，但仍需确认默认动作方案。
+					confirmedNodes = append(confirmedNodes, node.Key)
+					changed = changed || !previousConfirmed[node.Key]
+				}
 				continue
 			}
 			nodeSeed := autoConfigureSeed(planID, pathID, node.Key)
@@ -1479,14 +1518,21 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 		return &PathConfigError{Kind: PathConfigErrorInvalid,
 			Message: strings.Join(dedupStrings(blockingRejections), "；")}
 	}
-	if !changed {
+	if !changed && !approveOnly {
 		return nil
 	}
 	compiled, compileErr := compilePathActions(actions, analysis.graph, analysis.pathAnalysis, actionCatalogGates(validation))
 	if compileErr != nil {
 		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "自动动作配置无法编译为可恢复场景"}
 	}
-	if err := s.persistAutoConfiguredActions(ctx, pathID, current, compiled, personStrategies, confirmedNodes); err != nil {
+	// 再次明确准备时仍按当前路径重编译；流程变化后的受影响标记和旧场景不能让用户永远无法重新准备。
+	if approveOnly {
+		changed = changed || current.ConfigStatus != "configured" || current.NodeStatus != "configured" || !sameCompiledSteps(decodeWorkspaceSteps(current.CompiledSteps), compiled.Steps)
+	}
+	if !changed {
+		return nil
+	}
+	if err := s.persistAutoConfiguredActions(ctx, pathID, current, compiled, personStrategies, confirmedNodes, configuration); err != nil {
 		return err
 	}
 	return rejectionError
@@ -1656,7 +1702,7 @@ func dedupStrings(values []string) []string {
 }
 
 // persistAutoConfiguredActions 用与手工保存相同的落盘规则一次性写入自动配置结果。
-func (s *PathConfigService) persistAutoConfiguredActions(ctx context.Context, pathID uint64, current repository.HistoryPathConfigRecord, compiled scenario.Result, personStrategies map[string]model.PathConfigPersonStrategyInput, confirmedNodes []string) error {
+func (s *PathConfigService) persistAutoConfiguredActions(ctx context.Context, pathID uint64, current repository.HistoryPathConfigRecord, compiled scenario.Result, personStrategies map[string]model.PathConfigPersonStrategyInput, confirmedNodes []string, configuration model.PathConfiguration) error {
 	nextActionRevision := current.ActionRevision + 1
 	for index := range compiled.Actions {
 		compiled.Actions[index].Revision = nextActionRevision
@@ -1692,8 +1738,6 @@ func (s *PathConfigService) persistAutoConfiguredActions(ctx context.Context, pa
 	record.ActionRevision = nextActionRevision
 	record.NodeRevision = current.NodeRevision + 1
 	record.Revision = current.Revision + 1
-	record.ConfigStatus = actionConfigStatus(len(compiled.Actions))
-	record.NodeStatus = record.ConfigStatus
 	if strings.TrimSpace(record.SourceMode) == "" {
 		record.SourceMode = model.HistorySourceModeNone
 	}
@@ -1707,6 +1751,7 @@ func (s *PathConfigService) persistAutoConfiguredActions(ctx context.Context, pa
 	if err != nil {
 		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "已确认节点无法编码"}
 	}
+	applyStoredActionConfigurationStatus(&record, configuration)
 	if len(record.BranchPatches) == 0 {
 		record.BranchPatches = []byte(`[]`)
 	}

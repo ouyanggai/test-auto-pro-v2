@@ -16,6 +16,7 @@ import { useRouter } from 'vue-router'
 
 import AppEmptyState from '../components/AppEmptyState.vue'
 import { fetchExecutionPaths } from '../features/execution-paths/api'
+import { isExecutionPathRunnable } from '../features/execution-paths/logic'
 import { planStatusLabels, planStatusOptions } from '../features/plans/logic'
 import { batchDeletePlans, deletePlan, fetchPlansPaged, PlanApiError } from '../features/plans/persistence'
 import type { PlanFilters, PlanRow, PlanStatus } from '../features/plans/types'
@@ -94,7 +95,7 @@ async function runFromList(plan: PlanRow): Promise<void> {
   try {
     const paths = await fetchExecutionPaths(plan.id, new AbortController().signal)
     const selected = paths
-      .filter(path => path.configurationStatus === 'configured' && path.dataStatus === 'ready')
+      .filter(isExecutionPathRunnable)
       .map(path => path.id)
     if (selected.length === 0) {
       message.warning('该计划还没有可执行的路径：请先完成节点配置与基础表单数据')

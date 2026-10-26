@@ -56,17 +56,17 @@ type PathConfigAnalyzer interface {
 
 // PathConfigService 组织计划身份、路径归属、目标重读和 F012 配置投影。
 type PathConfigService struct {
-	plans                    *PlanService
-	target                   PathConfigReader
-	flowAnalyzer             FlowAnalyzer
-	pathAnalyzer             ExecutionPathChoiceAnalyzer
-	configAnalyzer           PathConfigAnalyzer
-	pathRepository           repository.ExecutionPathRepository
-	historyStore             repository.HistoryReplayStore
-	historyConfigStore       repository.HistoryPathConfigStore
-	companyDirectory         PathDataCompanyDirectory
-	addSignExclusionService  *AddSignPersonExclusionService
-	now                      func() time.Time
+	plans                   *PlanService
+	target                  PathConfigReader
+	flowAnalyzer            FlowAnalyzer
+	pathAnalyzer            ExecutionPathChoiceAnalyzer
+	configAnalyzer          PathConfigAnalyzer
+	pathRepository          repository.ExecutionPathRepository
+	historyStore            repository.HistoryReplayStore
+	historyConfigStore      repository.HistoryPathConfigStore
+	companyDirectory        PathDataCompanyDirectory
+	addSignExclusionService *AddSignPersonExclusionService
+	now                     func() time.Time
 }
 
 // NewPathConfigService 组装 F012 路径配置服务依赖；持久化统一由历史路径配置仓储负责。
@@ -109,7 +109,7 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 		}
 	}
 	configuration.Revision, configuration.NodeRevision = stored.Revision, stored.NodeRevision
-	applyConfirmedNodeState(&configuration, decodeConfirmedNodeKeys(stored.ConfirmedNodeKeys))
+	applyConfirmedNodeState(&configuration, decodeConfirmedNodeKeys(stored.ConfirmedNodeKeys), decodeHistoryPersonStrategies(stored.PersonStrategies))
 	if err := s.applyHistoryActionProjection(ctx, pathID, &configuration); err != nil {
 		return model.PathConfiguration{}, err
 	}
@@ -292,7 +292,7 @@ func derivePathConfigurationStatus(configuration model.PathConfiguration) string
 }
 
 // applyConfirmedNodeState 用 F012 独立确认事实覆盖节点配置状态，避免"有记录即完成"。
-func applyConfirmedNodeState(configuration *model.PathConfiguration, confirmedKeys []string) {
+func applyConfirmedNodeState(configuration *model.PathConfiguration, confirmedKeys []string, persons map[string]model.PathConfigPersonStrategyInput) {
 	confirmed := make(map[string]bool, len(confirmedKeys))
 	for _, key := range confirmedKeys {
 		confirmed[strings.TrimSpace(key)] = true
@@ -309,6 +309,23 @@ func applyConfirmedNodeState(configuration *model.PathConfiguration, confirmedKe
 			}
 			if confirmed[node.Key] {
 				node.Status, node.StatusName = "configured", "已完成"
+				// 确认默认动作不能代替处理人策略；缺少或失效的自选人员仍必须保持待处理。
+				for index := range node.Persons {
+					person := &node.Persons[index]
+					if !person.Editable {
+						continue
+					}
+					strategy, found := persons[person.Key]
+					if !found {
+						node.Status, node.StatusName = "pending", "人员待准备"
+						break
+					}
+					if reason := validateAutoNodePerson(*person, strategy); reason != "" {
+						node.Status, node.StatusName = "affected", "人员需重新选择"
+						person.Affected, person.Note = true, reason
+						break
+					}
+				}
 			} else {
 				node.Status, node.StatusName = "pending", "待配置"
 			}
@@ -393,6 +410,7 @@ func (s *PathConfigService) ValidPlatformUserSet(ctx context.Context) map[string
 func (s *PathConfigService) ExcludedActorIDs(ctx context.Context) map[string]bool {
 	return s.excludedPersonIDs(ctx)
 }
+
 // applyExclusionFilter 对配置中所有人员的候选选项进行排除名单过滤。
 // 覆盖三处人员候选来源：
 //  1. 节点处理人 node.Persons[].Options（节点本身的处理人选择）；

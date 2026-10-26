@@ -64,9 +64,8 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 	if finalNode := strings.TrimSpace(input.FinalNodeKey); finalNode != "" && nodeIndex(sequence, finalNode) < 0 {
 		return Result{}, &CompileError{Issues: []model.ActionConfigurationIssue{{Code: "FINAL_NODE_UNKNOWN", Message: "最终导航节点不属于当前已核实路径", Blocking: true}}}
 	}
-	if len(actions) == 0 {
-		return Result{Actions: []model.ConfiguredAction{}, Steps: []model.CompiledActionStep{}, Issues: []model.ActionConfigurationIssue{}}, nil
-	}
+	// 用户额外动作可以为空；当前路径仍必须编译默认提交、人工同意与系统导航。
+	// 是否已经准备好由节点确认和运行前检查决定，不能把“没有额外动作”当成“没有可执行场景”。
 	if len(input.Edges) > 0 {
 		// 旧配置的 Order 可能按广度遍历保存。互不相依的并行分支按当前拓扑
 		// 重排，但同节点动作及显式重新提交的生命周期顺序不能被改写。

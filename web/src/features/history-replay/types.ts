@@ -65,9 +65,13 @@ export interface HistoryCandidatePage {
 export type HistoryReplayStatus = 'queued' | 'running' | 'completed' | 'cancelled' | 'failed'
 export type HistoryReplayItemStatus = 'pending' | 'running' | 'ready' | 'needs_input' | 'affected' | 'failed'
 
-// HistoryReplayJob 只呈现后端真实聚合计数，租约、幂等键和 fencing 信息不进入页面状态。
+// HistoryReplayActionMode 区分快速同意方案与额外随机动作方案。
+export type HistoryReplayActionMode = 'approve_only' | 'random'
+
+// HistoryReplayJob 呈现真实方案与计数，租约、幂等键和 fencing 信息不进入页面状态。
 export interface HistoryReplayJob {
   id: string
+  actionMode: HistoryReplayActionMode
   status: HistoryReplayStatus
   total: number
   pending: number

@@ -42,6 +42,7 @@ import {
   deriveExecutionPathDecisionProgress,
   deriveExecutionPathWorkspaceDisposition,
   hasExecutionPathDraftChanges,
+  isExecutionPathRunnable,
   projectExecutionPathSummary,
   reconcileExecutionPathChoices,
   refreshExecutionPathDraft,
@@ -51,12 +52,14 @@ import type { ExecutionPath, ExecutionPathChoice, ExecutionPathWorkspaceMode, Pa
 import {
   cancelHistoryReplay,
   createHistoryReplay,
-  type HistoryReplayActionMode,
   fetchActiveHistoryReplay,
   fetchHistoryReplay,
+  fetchHistoryReplayItems,
   resumeHistoryReplay,
 } from '../features/history-replay/api'
-import type { HistoryReplayJob } from '../features/history-replay/types'
+import type { HistoryReplayActionMode, HistoryReplayItem, HistoryReplayJob } from '../features/history-replay/types'
+import { preparationOutcome } from '../features/history-replay/preparation'
+import type { PreparationOutcome } from '../features/history-replay/preparation'
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph, FlowGraphApiError } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
@@ -106,7 +109,8 @@ const preparationJob = ref<HistoryReplayJob | null>(null)
 const preparationLoading = ref(false)
 const dataPickerOpen = ref(false)
 // 一键配置动作模式（用户裁决：先只做两种）——approve_only=每一步都同意跑通；random=每节点随机一个动作。
-const oneClickMode = ref<HistoryReplayActionMode>('random')
+const oneClickMode = ref<HistoryReplayActionMode>('approve_only')
+const preparationResult = ref<PreparationOutcome | null>(null)
 // 运行入口：计划详情右上角的「运行」只启动当前勾选路径，与路径页的勾选范围严格一致。
 const runPreflightOpen = ref(false)
 const SAVED_PATH_ITEM_SIZE = 44
@@ -182,7 +186,7 @@ const pathSummary = computed(() => graph.value && pathAnalysis.value
   ? projectExecutionPathSummary(graph.value, pathAnalysis.value, draftChoices.value)
   : [])
 const generationBusy = computed(() => generationJob.value?.status === 'queued' || generationJob.value?.status === 'running')
-const preparationBusy = computed(() => preparationJob.value?.status === 'queued' || preparationJob.value?.status === 'running')
+const preparationBusy = computed(() => preparationLoading.value || preparationJob.value?.status === 'queued' || preparationJob.value?.status === 'running')
 const preparationProcessed = computed(() => preparationJob.value
   ? preparationJob.value.total - preparationJob.value.pending - preparationJob.value.running
   : 0)
@@ -218,6 +222,8 @@ async function loadPage() {
   runSelectionTouched.value = false
   pathSelectionError.value = ''
   preparationJob.value = null
+  preparationLoading.value = false
+  preparationResult.value = null
   pathWorkspaceOpen.value = false
   savedPathsOpen.value = false
   draftRecoveryLoading.value = false
@@ -329,13 +335,35 @@ async function retryPaths(): Promise<boolean> {
 // retryPathsAndFinalizePreparation 在完成任务的路径刷新重试成功后收起进度区。
 async function retryPathsAndFinalizePreparation(): Promise<boolean> {
   const completedJob = preparationJob.value?.status === 'completed' ? preparationJob.value : null
-  const refreshed = await retryPaths()
-  if (refreshed && completedJob && preparationJob.value === completedJob) {
-    const processed = preparationProcessed.value
+  return completedJob ? finishPreparation(completedJob) : retryPaths()
+}
+
+// 完成后同时核对本次任务明细和最新路径状态；刷新失败保留任务，不能提前弹成功或丢掉重试入口。
+async function finishPreparation(job: HistoryReplayJob): Promise<boolean> {
+  const version = loadVersion, requestPlanID = planID.value
+  preparationLoading.value = true
+  try {
+    if (!await retryPaths() || version !== loadVersion) return false
+    const items: HistoryReplayItem[] = []
+    let cursor = 0
+    do {
+      const page = await fetchHistoryReplayItems(requestPlanID, job.id, cursor, 100)
+      if (version !== loadVersion) return false
+      items.push(...page.items)
+      if (page.nextCursor !== undefined && page.nextCursor <= cursor) throw new Error('准备结果游标未推进，请重新读取')
+      cursor = page.nextCursor ?? 0
+    } while (cursor)
+    if (items.length !== job.total) throw new Error('准备结果尚未读取完整，请重新读取')
+    preparationResult.value = preparationOutcome(paths.value, items)
     preparationJob.value = null
-    message.success(`一键配置完成，已处理 ${processed} 条路径`)
+    message[preparationResult.value.tone](preparationResult.value.message)
+    return true
+  } catch (caught) {
+    if (version === loadVersion) pathSelectionError.value = caught instanceof Error ? caught.message : '准备结果未能核对，请重新读取'
+    return false
+  } finally {
+    if (version === loadVersion) preparationLoading.value = false
   }
-  return refreshed
 }
 
 async function selectSavedPath(path: ExecutionPath) {
@@ -372,22 +400,27 @@ function updateRunPathSelection(path: ExecutionPath, included: boolean) {
 async function startSelectedPreparation() {
   if (!planMutable.value || preparationBusy.value || selectedRunPathIDs.value.size === 0) return
   preparationLoading.value = true
+  preparationResult.value = null
   pathSelectionError.value = ''
+  const version = loadVersion
   try {
-    preparationJob.value = await createHistoryReplay(
+    const job = await createHistoryReplay(
       planID.value,
       [...selectedRunPathIDs.value].map(pathID => Number(pathID)),
       0,
       createUuid(),
       oneClickMode.value,
     )
-    schedulePreparationPoll()
+    if (version !== loadVersion) return
+    preparationJob.value = job
+    if (job.status === 'completed') await finishPreparation(job)
+    else schedulePreparationPoll()
   }
   catch (caught) {
-    pathSelectionError.value = caught instanceof Error ? caught.message : '一键配置失败，请重试'
+    if (version === loadVersion) pathSelectionError.value = caught instanceof Error ? caught.message : '一键配置失败，请重试'
   }
   finally {
-    preparationLoading.value = false
+    if (version === loadVersion) preparationLoading.value = false
   }
 }
 
@@ -395,8 +428,9 @@ async function startSelectedPreparation() {
 async function restoreActivePreparation(signal?: AbortSignal) {
   try {
     const active = await fetchActiveHistoryReplay(planID.value, signal)
-    if (!active) return
+    if (!active || signal?.aborted) return
     preparationJob.value = active
+    oneClickMode.value = active.actionMode
     schedulePreparationPoll()
   }
   catch (caught) {
@@ -409,23 +443,22 @@ async function restoreActivePreparation(signal?: AbortSignal) {
 function schedulePreparationPoll() {
   if (preparationTimer) clearTimeout(preparationTimer)
   if (!preparationBusy.value || !preparationJob.value) return
+  const version = loadVersion, requestPlanID = planID.value
   preparationTimer = setTimeout(async () => {
     const current = preparationJob.value
     if (!current) return
     try {
-      const refreshedJob = await fetchHistoryReplay(planID.value, current.id)
+      const refreshedJob = await fetchHistoryReplay(requestPlanID, current.id)
+      if (version !== loadVersion || preparationJob.value?.id !== current.id) return
       preparationJob.value = refreshedJob
       if (refreshedJob.status === 'completed') {
-        if (await retryPaths()) {
-          preparationJob.value = null
-          message.success(`一键配置完成，已处理 ${refreshedJob.total - refreshedJob.pending - refreshedJob.running} 条路径`)
-        }
+        await finishPreparation(refreshedJob)
         return
       }
       schedulePreparationPoll()
     }
     catch (caught) {
-      pathSelectionError.value = caught instanceof Error ? caught.message : '暂时无法刷新批量准备进度'
+      if (version === loadVersion) pathSelectionError.value = caught instanceof Error ? caught.message : '暂时无法刷新批量准备进度'
     }
   }, 700)
 }
@@ -559,7 +592,7 @@ async function editActivePath() {
 function defaultRunSelection(existing: string[]): Set<string> {
   if (runSelectionTouched.value || existing.length > 0) return new Set(existing)
   return new Set(paths.value
-    .filter(path => path.configurationStatus === 'configured' && path.dataStatus === 'ready')
+    .filter(isExecutionPathRunnable)
     .map(path => path.id))
 }
 
@@ -706,17 +739,16 @@ function pathDisplayName(path: ExecutionPath): string {
 
 // pathConfigurationLabel 把节点人员与动作状态翻译成独立业务标签。
 function pathConfigurationLabel(path: ExecutionPath): string {
-  if (path.configurationStatus === 'configured') return '节点已配置'
+  if (path.configurationStatus === 'configured') return '节点已准备'
   if (path.configurationStatus === 'partial') return '节点部分配置'
   if (path.configurationStatus === 'affected') return '节点受影响'
-  return '节点待配置'
+  return '节点待准备'
 }
 
 // pathDataLabel 把表单数据准备状态翻译成独立业务标签。
-// base_ready（F-035/T08）是“基础数据已生成、最终表单未确认”，不得显示成已就绪。
+// 服务端已允许 base_ready 进入运行前检查，不能在列表中继续显示成不可运行的数据状态。
 function pathDataLabel(path: ExecutionPath): string {
-	if (path.dataStatus === 'ready') return '数据已就绪'
-	if (path.dataStatus === 'base_ready') return '基础数据已生成（服务端已解析选项绑定）'
+	if (path.dataStatus === 'ready' || path.dataStatus === 'base_ready') return '数据已准备'
 	if (path.dataStatus === 'needs_input') return '数据需补充'
 	if (path.dataStatus === 'affected') return '数据受影响'
 	return '数据未选择'
@@ -851,7 +883,7 @@ onMounted(() => {
                 :title="selectedRunPathIDs.size === 0 ? '先勾选要运行的路径' : `运行已勾选的 ${selectedRunPathIDs.size} 条路径`"
                 @click="openRunPreflight"
               >
-                运行
+                检查并运行
               </n-button>
             </n-space>
           </header>
@@ -878,9 +910,9 @@ onMounted(() => {
               <div class="path-prepare__header-actions">
 							<n-button v-if="paths.length" size="small" secondary :disabled="preparationBusy || allPathsSelectedForRun" @click="setAllRunPathSelections(true)">全选</n-button>
                 <n-button v-if="paths.length" size="small" secondary :disabled="preparationBusy || selectedRunPathIDs.size === 0" @click="setAllRunPathSelections(false)">取消全选</n-button>
-							<n-radio-group v-if="planMutable && paths.length" v-model:value="oneClickMode" size="small" :disabled="preparationBusy">
-								<n-radio-button value="random">每节点随机一个动作</n-radio-button>
+							<n-radio-group v-if="planMutable && paths.length" v-model:value="oneClickMode" size="small" :disabled="preparationBusy || dataPickerOpen" aria-label="准备方案" aria-describedby="preparation-mode-help">
 								<n-radio-button value="approve_only">每一步都同意（快速跑通）</n-radio-button>
+								<n-radio-button value="random">每节点随机一个动作</n-radio-button>
 							</n-radio-group>
 							<n-button
 								v-if="planMutable && paths.length"
@@ -891,19 +923,40 @@ onMounted(() => {
 								:disabled="preparationBusy || selectedRunPathIDs.size === 0"
 								@click="dataPickerOpen = true"
 							>
-								一键配置
+								{{ oneClickMode === 'approve_only' ? '准备全同意方案' : '一键配置随机动作' }}
 							</n-button>
               </div>
             </div>
+            <p id="preparation-mode-help" class="path-prepare__help">
+              先选择方案，再准备所选路径，最后检查并运行。
+              {{ oneClickMode === 'approve_only' ? '全同意方案只执行发起提交和节点同意，会替换所选路径的额外动作；保留节点人员与表单数据。' : '随机方案为未配置节点补充额外动作，保留已有人工配置。' }}
+            </p>
             <base-form-data-picker
               v-if="dataPickerOpen"
               v-model:show="dataPickerOpen"
               :plan-id="planID"
               scope="default"
-              confirm-text="开始配置"
+              :confirm-text="oneClickMode === 'approve_only' ? '准备全同意方案' : '开始配置随机动作'"
               :disabled="!planMutable"
               @saved="startSelectedPreparation"
-            />
+            >
+              <template #preparation>
+                <n-alert :type="oneClickMode === 'approve_only' ? 'warning' : 'info'" :show-icon="false">
+                  本次准备 {{ selectedRunPathIDs.size }} 条路径。
+                  {{ oneClickMode === 'approve_only' ? '确认后将额外动作替换为默认提交/同意，保留节点主处理人策略；所选基础数据用于准备表单。不会立即启动运行。' : '补齐节点人员与随机动作，保留已有人工动作。不会立即启动运行。' }}
+                </n-alert>
+              </template>
+            </base-form-data-picker>
+            <n-alert v-if="preparationResult" :type="preparationResult.tone" :show-icon="false" role="status" aria-live="polite">
+              {{ preparationResult.message }}
+              <ul v-if="preparationResult.details.length" class="path-prepare__result-details">
+                <li v-for="detail in preparationResult.details.slice(0, 5)" :key="detail.pathId">
+                  {{ detail.name }}：{{ detail.reason }}
+                  <n-button text type="primary" @click="locateReadinessItem(detail.pathId, '')">查看配置</n-button>
+                </li>
+              </ul>
+              <span v-if="preparationResult.details.length > 5">还有 {{ preparationResult.details.length - 5 }} 条需处理，可点击“检查并运行”查看完整原因。</span>
+            </n-alert>
             <n-alert v-if="pathSelectionError" type="error" :show-icon="false">
               {{ pathSelectionError }}
 						<n-button text type="primary" @click="retryPathsAndFinalizePreparation">重新读取</n-button>
@@ -964,7 +1017,7 @@ onMounted(() => {
 							<n-tag size="small" :bordered="false" :type="path.configurationStatus === 'configured' ? 'success' : path.configurationStatus === 'partial' || path.configurationStatus === 'affected' ? 'warning' : 'default'" :title="path.configurationDetail">
                     {{ pathConfigurationLabel(path) }}
                   </n-tag>
-							<n-tag size="small" :bordered="false" :type="path.dataStatus === 'ready' ? 'success' : path.dataStatus === 'needs_input' || path.dataStatus === 'affected' || path.dataStatus === 'base_ready' ? 'warning' : 'default'" :title="path.dataDetail">
+							<n-tag size="small" :bordered="false" :type="path.dataStatus === 'ready' || path.dataStatus === 'base_ready' ? 'success' : path.dataStatus === 'needs_input' || path.dataStatus === 'affected' ? 'warning' : 'default'" :title="path.dataDetail">
                     {{ pathDataLabel(path) }}
                   </n-tag>
 									</div>
@@ -1354,6 +1407,9 @@ onMounted(() => {
   justify-content: flex-end;
   gap: 8px;
 }
+
+.path-prepare__help { margin: 0; color: var(--text-color-3); line-height: 1.6; }
+.path-prepare__result-details { margin: 8px 0 0; padding-left: 20px; overflow-wrap: anywhere; }
 
 .path-prepare__header h2 {
   margin: 0 0 4px;

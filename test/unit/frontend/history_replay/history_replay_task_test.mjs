@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
+import { createHistoryReplay } from '../../../../web/src/features/history-replay/api.ts'
 
 const root = new URL('../../../..', import.meta.url)
 const read = (relative) => fs.readFileSync(new URL(relative, root), 'utf8')
@@ -16,10 +17,22 @@ test('计划详情一键配置走服务端批量准备任务', () => {
   assert.doesNotMatch(view, /from ['"]\.\.\/features\/path-preparation\/api['"]|createPathPreparation\(|fetchActivePathPreparation\(/)
 })
 
-// TestPreparationApiUsesRawPathSelection 验证批量准备创建请求只携带路径 ID 和修订号，不包装表单正文。
-test('批量准备 API 只发送路径选择与修订', () => {
+// TestPreparationApiUsesRawPathSelection 验证真实创建请求携带路径、修订与动作方案，不包装表单正文。
+test('批量准备 API 发送明确的路径选择、修订和动作方案', async () => {
   const api = read('web/src/features/history-replay/api.ts')
   assert.match(api, /history-replays/)
-  assert.match(api, /JSON\.stringify\(\{ pathIds, revision \}\)/)
+  const fetchBefore = globalThis.fetch
+  let request
+  globalThis.fetch = async (url, init) => {
+    request = { url, init }
+    return { ok: true, json: async () => ({ success: true, data: { id: 'job-1', actionMode: 'approve_only' } }) }
+  }
+  try {
+    const result = await createHistoryReplay('91', [101, 102], 0, '123e4567-e89b-12d3-a456-426614175050', 'approve_only')
+    assert.equal(request.url, '/api/plans/91/history-replays')
+    assert.equal(request.init.method, 'POST')
+    assert.deepEqual(JSON.parse(request.init.body), { pathIds: [101, 102], revision: 0, actionMode: 'approve_only' })
+    assert.equal(result.actionMode, 'approve_only')
+  } finally { globalThis.fetch = fetchBefore }
   assert.doesNotMatch(api, /HistoricalDataPayload|rawFormData|fieldMapping|renderAdapter/)
 })
