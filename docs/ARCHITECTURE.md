@@ -38,6 +38,18 @@ F-036 将页面执行从 `form-runtime/` 迁到根目录 `executor-service/`，�
 
 实现与人工门禁见 `docs/features/F-036-independent-executor-native-page.md` 和 `docs/s2/`。
 
+## F-053 发布源码准备与版本冻结
+
+待实施方案，状态 `awaiting_approval`；当前实现仍只按原清单打包，实施与验证范围见 [F-053](features/F-053-release-sync-invest-test.md)。
+
+- **双来源输入**：独立 `/flow` 应用继续使用受控 `rsh-flow-components` 基座；流程业务来源固定为用户指定的 `rsh-cloud-invest-power-system` 远端 `refs/heads/test`。两者分别记录 remote、branch 和完整 SHA。全过程本机目录为 `D:\work\newroom\rsh-cloud-invest-power-system`，本机定位信息进入被忽略的发布配置；不复制当前 `oygdev2` 工作树或让开发机绝对路径进入容器构建契约。
+- **冻结时点**：`deploy/update.py` 在每次发布或 `--package-only` 的源码准备阶段解析远端 `test`，以该次 SHA 取得 Git 对象；打包和构建不再解析浮动分支。过程中远端前移留给下次发布；解析或取得该提交失败，当前发布返回非零，不回落旧业务快照。
+- **同步边界**：受控映射覆盖 `GroupApproveManage` 及其直接引用的公共组件、工具和必要资源，包含合同组件、发起/审批页面及 `src/utils/contractAmount.js`。保留基座路由、接入与构建适配，业务文件保持来源原文；不整体覆盖全过程的 `src`、构建配置或 FormMaking 库源码。不直接运行带 macOS 路径且范围更广的上游同步脚本。
+- **隔离与安全**：从 Git 对象导出独立候选，逐文件校验映射、依赖、删除和保留路径冲突，成功前不替换已有执行器源码。参考目录仍只通过 `make refs-sync` 更新；发布候选不修改参考检出或用户提供的源仓库，不要求切分支，不清理其修改。
+- **单一构建输入**：发布包从已核对的合成候选生成，不能继续仅归档基座 SHA；包内保存两套来源、映射版本和合成输入摘要。`build-native-page` / `Dockerfile.executor` 校验并消费同一输入，构建缓存包含业务源码变化；直接 Compose 构建同样要求准备事实完整且匹配。
+- **版本证明**：执行器源码元数据、构建记录、`deploy/release-source.json` 及成功发布事实能对上基座 SHA、业务 SHA 与内容摘要。执行器在已发布容器启动时不自行改变这些来源。失败准备不能把旧包当作新包继续上传，成功同步也不等于构建或发布成功。
+- **现有边界**：凭证、Git 元数据、日志、缓存和本机产物不进包，FormMaking 产物沿用现有受控来源；不修改动作协议、身份校验、数据库或目标业务，不自动升级配置侧 `form-runtime` 和持久化 live 版本。本切片实施与本地验证完成后停在 `ready_for_manual`，实际部署另按用户指令安排。
+
 ## F-037 运行画布与动作配置可用性修复
 
 F-037 在现有运行控制、目标读取和场景编译边界内修复画布与动作配置的可用性，状态 `ready_for_manual`，不新增状态机、数据库表或目标写接口。
