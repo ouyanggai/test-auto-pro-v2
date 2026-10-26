@@ -1186,7 +1186,10 @@ async function main (): Promise<void> {
             ? await session.page.evaluate(synchronizeNativeForm, { phase: 'verify' as const, expected: session.expectedFormValues })
             : null
           if (verified === null && allowed.length > 0) throw new UnsupportedFormError('表单值核对时数据接口不可用')
-          if (verified) patchReadback = verified.values
+          if (verified) {
+            patchReadback = verified.values
+            session.expectedFormValues = verified.expected
+          }
           session.baseline.end(loadStage, 'returned')
 
           loadStage = session.baseline.begin('existing_form_snapshot_before')

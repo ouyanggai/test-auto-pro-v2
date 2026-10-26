@@ -221,8 +221,10 @@ type RunStepAttemptDTO struct {
 
 // RunStepDTO 是一个已落账步骤的公开事实。
 type RunStepDTO struct {
-	StepNo     int    `json:"stepNo"`
-	ActionName string `json:"actionName"`
+	Source     string              `json:"source"`
+	Status     model.RunStepStatus `json:"status"`
+	StepNo     int                 `json:"stepNo"`
+	ActionName string              `json:"actionName"`
 	// Action 是稳定动作键（F-034 评审）：前端据此走集中中文映射，不从中文名反推动作类型。
 	Action  string `json:"action,omitempty"`
 	NodeKey string `json:"nodeKey"`
@@ -2393,6 +2395,8 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 			}
 		}
 		dto := RunStepDTO{
+			Source:       stepRecord.Source,
+			Status:       stepRecord.Status,
 			StepNo:       stepRecord.StepNo,
 			ActionName:   actionNameOf(stepRecord.Action),
 			Action:       stepRecord.Action,

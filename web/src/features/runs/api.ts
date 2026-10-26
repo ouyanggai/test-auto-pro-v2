@@ -114,6 +114,8 @@ export interface RunRequestItem {
 }
 
 export interface RunStep {
+  source: string
+  status: 'succeeded' | 'failed' | 'uncertain' | 'skipped'
   stepNo: number
   actionName: string
   // action 是稳定动作键：actionLabel 据此映射中文，不从中文名反推动作类型。

@@ -67,18 +67,35 @@ export async function synchronizeNativeForm (input: NativeFormInput): Promise<Na
     return Object.is(expected, actual)
   }
   if (input.phase === 'verify') {
-    const expected = input.expected || {}
-    const changed = Object.keys(expected).filter(key => !matches(expected[key], read(current, key.split('.'))))
-    if (changed.length) {
-      const labels: Record<string, string> = {}
-      const visit = (node: unknown): void => {
-        if (!node || typeof node !== 'object') return
-        const item = node as Values
-        if (typeof item.model === 'string' && typeof item.name === 'string') labels[item.model] = item.name
-        for (const child of Object.values(item)) if (child && typeof child === 'object') visit(child)
+    const expected = clone(input.expected || {})
+    const fields = new Map<string, Values>()
+    const visit = (node: unknown): void => {
+      if (!node || typeof node !== 'object') return
+      const item = node as Values
+      if (typeof item.model === 'string') fields.set(item.model, item)
+      for (const child of Object.values(item)) if (child && typeof child === 'object') visit(child)
+    }
+    visit(form.formData)
+    const changed: string[] = []
+    for (const key of Object.keys(expected)) {
+      const actual = read(current, key.split('.'))
+      if (matches(expected[key], actual)) continue
+      const field = fields.get(key)
+      // 目标通用关联控件用 JSON 字符串同时携带配置与选择结果；审批 refresh 会把 [] 补为仅含 flowType 的空选择配置。
+      // 只接受这个控件的配置补齐，不接受新增/丢失选中 ID、非空数组或其他字段的类型变化，也不按业务字段名放行。
+      if (field?.type === 'custom' && field.el === 'general-list-select-show' && Array.isArray(expected[key]) && (expected[key] as unknown[]).length === 0 && typeof actual === 'string') {
+        let config: Values | null = null
+        try { config = JSON.parse(actual) as Values } catch {}
+        if (config && !Array.isArray(config) && Object.keys(config).length === 1 && typeof config.flowType === 'string' && config.flowType.trim() !== '') {
+          // 接受原生规范值后将它固定下来；动作前不得再次变成别的流程类型或选中别的流程。
+          expected[key] = actual
+          continue
+        }
       }
-      visit(form.formData)
-      const detail = changed.map(key => `${labels[key] || key}（${key}）：预期 ${JSON.stringify(expected[key])}，实际 ${JSON.stringify(read(current, key.split('.')))}`).join('；')
+      changed.push(key)
+    }
+    if (changed.length) {
+      const detail = changed.map(key => `${fields.get(key)?.name || key}（${key}）：预期 ${JSON.stringify(expected[key])}，实际 ${JSON.stringify(read(current, key.split('.')))}`).join('；')
       throw new Error(`表单值已偏离路径配置，拒绝执行：${detail}`)
     }
     return { values: current, expected }

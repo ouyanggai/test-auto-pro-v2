@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	driver "github.com/go-sql-driver/mysql"
 
@@ -113,13 +115,31 @@ func (r *RunRepository) tryCreateRun(ctx context.Context, planID uint64, executi
 	return run, pathRun, nil
 }
 
-// appendRunEvent 在给定事务内追加一行运行事件；只被聚合状态变更调用，保证事件与状态同事务。
+// appendRunEvent 在给定事务内追加运行事件；标题有 255 字符存储边界，长原文必须移入详情，不能令状态事务回滚。
 func appendRunEvent(ctx context.Context, tx *sql.Tx, event model.RunEvent, now time.Time) error {
+	event = boundedRunEvent(event)
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO run_events (run_id, path_run_id, kind, label, detail, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, event.RunID, nullableUint64(event.PathRunID), event.Kind, event.Label, emptyToNull(event.Detail), now)
 	return err
+}
+
+// boundedRunEvent 限定标题摘要并把完整原文保留在 LONGTEXT 详情中；使用字符而非字节截取，不能截坏中文或 Emoji。
+func boundedRunEvent(event model.RunEvent) model.RunEvent {
+	if utf8.RuneCountInString(event.Label) <= 255 {
+		return event
+	}
+	original := event.Label
+	event.Label = string([]rune(original)[:254]) + "…"
+	if !strings.Contains(event.Detail, original) {
+		if event.Detail == "" {
+			event.Detail = original
+		} else {
+			event.Detail = original + "\n\n" + event.Detail
+		}
+	}
+	return event
 }
 
 // nullableUint64 把可空路径运行 ID 转为 database/sql 可识别的形态。

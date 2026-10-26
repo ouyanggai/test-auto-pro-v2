@@ -2,7 +2,8 @@
 import { NButton, NEmpty, NModal, NTag, useMessage } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
-import { formatElapsed, formatTime } from './api'
+import { formatTime } from './api'
+import { stepElapsedText, stepNoActionSummary, stepOutcome } from './actionOutcome'
 import { actionLabel } from './presentation'
 import { actionRequestEmptyMessage, mergeActionRequests } from './actionRequests'
 import { runtimeStatusLabel } from './runtimeDetail'
@@ -227,17 +228,13 @@ const stepOutcomeTitle = computed(() => {
   // F-034 评审 #2：路径级阻塞只绑定触发它的步骤，其他步骤用自身的执行状态，
   // 防止把第 3 步的阻塞原因显示到已成功的第 1 步上。
   const stepBlocked = props.detail.stopKind === 'blocked' && props.detail.stopStepNo === step.stepNo
-  if (stepBlocked) return '阻塞'
-  if (step.statusName.includes('失败')) return '失败'
-  if (step.statusName.includes('待确认') || step.statusName.includes('不确定')) return '结果待确认'
-  if (step.statusName.includes('成功') || step.statusName.includes('完成') || step.statusName.includes('跳过')) return '成功'
-  return step.statusName
+  return stepOutcome(step, stepBlocked)
 })
 
 // stepOutcomeTone 给结果摘要配语义色：阻塞与失败同色但文字不同，待确认单独色。
 const stepOutcomeTone = computed<'success' | 'error' | 'warning' | 'info'>(() => {
   const title = stepOutcomeTitle.value
-  if (title === '成功') return 'success'
+  if (title === '成功' || title === '节点已确认') return 'success'
   if (title === '阻塞' || title === '失败') return 'error'
   if (title === '结果待确认') return 'warning'
   return 'info'
@@ -318,6 +315,9 @@ const stepPlainSummary = computed(() => {
   const who = step.actorName?.trim() || '处理人'
   const where = (props.nodeName || step.nodeKey || '该节点').trim()
   const title = stepOutcomeTitle.value
+
+  const noAction = stepNoActionSummary(step, where)
+  if (noAction) return noAction
 
   // 加签动作特殊简洁表达：谁在哪个节点执行了加签，加签给了谁。
   // 历史步骤的被加签人从 step.receiverName 取（后端从 gateSnapshot 落库），
@@ -498,10 +498,10 @@ function gateItemText(item: { label?: string; key?: string; required?: boolean; 
         <ul class="run-panel__rows">
           <li v-for="item in nodeTimeline" :key="item.stepNo" class="run-panel__row" :class="`run-panel__timeline-row--${item.status}`">
             <div class="run-panel__row-main">
-              <span class="run-panel__row-title">第 {{ item.stepNo }} 步 · {{ actionLabel(item.actionName, item.action) }} · {{ item.statusName }}</span>
+              <span class="run-panel__row-title">第 {{ item.stepNo }} 步 · {{ actionLabel(item.actionName, item.action) }} · {{ timelineStep(item.stepNo) ? stepOutcome(timelineStep(item.stepNo)!) : item.statusName }}</span>
               <span class="run-panel__row-sub">
                 <template v-if="item.actorName">处理人：{{ item.actorName }} · </template>
-                <template v-if="item.status === 'executed' && timelineStep(item.stepNo)">耗时 {{ formatElapsed(timelineStep(item.stepNo)!.durationMs) }} · 开始于 {{ formatTime(timelineStep(item.stepNo)!.startedAt) }}</template>
+                <template v-if="item.status === 'executed' && timelineStep(item.stepNo)">{{ stepElapsedText(timelineStep(item.stepNo)!) }} · 记录于 {{ formatTime(timelineStep(item.stepNo)!.startedAt) }}</template>
                 <template v-else-if="item.status === 'running'">当前步骤正在处理或等待本次放行</template>
                 <template v-else>等待当前步骤完成后执行</template>
               </span>
@@ -613,7 +613,7 @@ function gateItemText(item: { label?: string; key?: string; required?: boolean; 
             <n-tag size="small" :type="stepOutcomeTone">{{ stepOutcomeTitle }}</n-tag>
             <span class="run-panel__summary-sub">第 {{ stepDialog.stepNo }} 步</span>
           </div>
-          <span class="run-panel__summary-time">共用时 {{ formatElapsed(stepDialog.durationMs) }}</span>
+          <span class="run-panel__summary-time">{{ stepElapsedText(stepDialog) }}</span>
         </div>
         <!-- 加签/转发：在结论行正下方明确显示执行人给了谁，不让用户去猜 -->
         <div v-if="stepDialog.receiverName" class="run-panel__receiver">

@@ -240,9 +240,48 @@ test('原生 URL 初始化保留完整身份，避免仅 companyId 导致 SID �
 test('实际服务装载后及分发前都调用只读核对；旧空值恢复链已移除', () => {
   const service = fs.readFileSync(new URL('../../../executor-service/src/server.ts', import.meta.url), 'utf8')
   assert.ok(service.includes("session.page.evaluate(synchronizeNativeForm, { phase: 'verify' as const"))
+  assert.ok(service.includes('session.expectedFormValues = verified.expected'))
   assert.ok(service.indexOf("begin('form_values_before_dispatch')") < service.indexOf("begin('native_dispatch_evaluate')"))
   assert.ok(!service.includes('restoreIntendedPatchViaPage'))
   assert.equal((service.match(/const params = nativeAuthQuery\(payload\)/g) || []).length, 3)
+})
+
+for (const flowType of ['single_source_delegation', 'proposed_supplier_review', 'another_flow_type']) test(`审批空关联可规范为控件配置并固定 ${flowType}，核对阶段不写表单`, async () => {
+  let actual: unknown = JSON.stringify({ flowType })
+  const form = {
+    formData: { list: [{ type: 'custom', el: 'general-list-select-show', model: 'arbitraryRelatedFlow', name: '关联流程' }] },
+    getValues: () => ({ arbitraryRelatedFlow: actual }),
+    setData: () => { throw new Error('核对不能写表单') }
+  }
+  const input = { phase: 'verify' as const, expected: { arbitraryRelatedFlow: [] } }
+  const verified = await execute(form, input)
+  assert.deepEqual(clone(input.expected), { arbitraryRelatedFlow: [] })
+  assert.equal(verified.expected.arbitraryRelatedFlow, actual)
+  await execute(form, { phase: 'verify', expected: verified.expected })
+  for (const changed of [JSON.stringify({ flowType: 'changed' }), JSON.stringify({ flowType, id: 'selected', name: '已选流程' }), []]) {
+    actual = changed
+    await assert.rejects(() => execute(form, { phase: 'verify', expected: verified.expected }), /偏离路径配置/)
+  }
+})
+
+test('空关联规范化不能放行已选记录、非法配置、其他控件或普通值偏离', async () => {
+  const cases = [
+    { expected: [], actual: '{"flowType":"test","id":"selected"}' },
+    { expected: [], actual: '{"flowType":""}' },
+    { expected: [], actual: '{"flowType":1}' },
+    { expected: [], actual: '{invalid}' },
+    { expected: [], actual: { flowType: 'test' } },
+    { expected: [{ id: 'selected' }], actual: '{"flowType":"test"}' },
+    { expected: '{"flowType":"test","id":"selected"}', actual: '{"flowType":"test"}' },
+    { expected: [], actual: '{"flowType":"test"}', el: 'another-control' },
+    { expected: 600, actual: 5000001 },
+    { expected: '直签', actual: '公开招标' }
+  ]
+  for (const item of cases) {
+    const form = { formData: { list: [{ type: 'custom', el: item.el || 'general-list-select-show', model: 'value' }] },
+      getValues: () => ({ value: item.actual }), setData() {} }
+    await assert.rejects(() => execute(form, { phase: 'verify', expected: { value: item.expected } }), /偏离路径配置/)
+  }
 })
 
 test('生产 URL 构造在发起、详情和转发模式都携带完整身份，taskContext 保持 JSON 类型', () => {
