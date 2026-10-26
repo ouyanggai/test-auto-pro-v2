@@ -25,10 +25,10 @@ F-036 将页面执行从 `form-runtime/` 迁到根目录 `executor-service/`，�
 
 
 - **源码隔离**：执行服务拥有独立页面构建包和独立 `rsh-flow-components` 快照，初始提交为已核实的 `test` 分支 `be355ae`；必须 `make refs-sync` 后复制，禁止复用 `form-runtime/runtime-source`。FormMaking 库产物独立构建。参考源码、依赖和产物不提交。
-- **原生装载**：无头 Chromium 导航参考项目路由。发起 `#/flow/initiate`；实例 `#/flow/detail/:id`，`mode=audit|edit|view`。身份注入对齐 `runtimeAuthSync`。`taskContext` 按 `FlowDetail.vue` 字段传入。
+- **原生装载**：无头 Chromium 导航参考项目路由。发起 `#/flow/initiate`；实例 `#/flow/detail/:id`，`mode=audit|edit|view`。身份注入及三种入口 URL 的完整身份参数对齐 `runtimeAuthSync` 与 postMessage 初始化，避免只传公司导致其他身份被清空。`taskContext` 按 `FlowDetail.vue` 字段传入。
 - **精确选模板**：`InitFlowDialog` 只按 `auditWayList` 查询模板。执行装载必须带计划 `auditWay` 与绑定 `flowTemplateId`，在查询结果中精确匹配；0 条、不含绑定 ID 或多模板误取第一项均阻塞。
 - **薄桥接**：拦截 `$initFlow`/`$flowDetail` 返回的 `instance`，调用页面已有业务方法（`sumbitFlow`、暂存/同意/不同意/重提/转发、选择继续方法）。禁止手工执行宿主和 `/test-auto-form/exec*`。
-- **数据补丁**：页面自己读模板、实例和字段权限。完成后仅用组件现有 `setData`/`getValues`/`getData`（或自定义页等价接口）写入当前节点允许值，等待选项和联动再回读。无接口则 `unsupported`。
+- **数据补丁**：页面自己读模板、实例和字段权限。执行页只回填当前节点允许值及既有只读人员依赖；原生表单按当前完整值叠加补丁更新初始化快照并 `refresh`，保留宿主业务选项、权限及伴生键，自定义页使用其等价 setter。等待选项、初始化与身份联动结束后回读核对，动作分发前再次只读核对；偏离即明确阻断，不绕过目标校验或改写业务请求正文。没有数据接口则 `unsupported`，不再保留只能补空值的恢复链。
 - **协议与租约**：生命周期为 `/runtime/session` + `/heartbeat` + `/destroy` + WebSocket。版本 `exec-engine/v2`，拒绝 v1。执行服务以默认 90 秒租约约束 BrowserContext，Go 动作期间每 10 秒续租；只回收已过期且不再续租的会话，正常结束仍主动销毁，避免 Go 中止或重启留下永久账号门禁。装载输入为身份、原生流程/任务上下文和当前节点数据补丁，不含 Go 渲染模板。
 - **转发**：`page.route()` 必须在 `page.goto` 之前安装；转发通道未连接成功不得装载。目标请求只经现有 `internal/adapter/target`。一次写纪律不变；写未知禁止重发和回退 Go 写路径。
 - **门禁**：删除能力登记执行门禁和验证模式。执行依据原生页面能力与目标权限。完成判定以动作期望写端点的 HTTP、`isSuccess` 和错误类型为准；页面信号与页面异常只作 `businessSummary` 证据，写后由 Go 重读目标事实最终裁决。

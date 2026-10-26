@@ -17,6 +17,8 @@ import { encodeEnvelope, PROTOCOL_VERSION, validateMessage, type MessageEnvelope
 import { InitiateBlockedError, planTemplateSelection } from './native-initiate.ts'
 import { resolveDetailSemantics } from './native-detail.ts'
 import { UnsupportedFormError } from './data-patch.ts'
+import { synchronizeNativeForm } from './native-form-values.ts'
+import { nativeAuthQuery } from './native-runtime-auth.ts'
 import { canContinueChoice, CHOICE_ERRORS } from './native-actions.ts'
 import { nativeChoiceContinue, nativeDispatch, type ChoiceContinueChoice, type DispatchInput } from './native-dispatch.ts'
 import { forwardInstanceID, isPermissionCheckSubmit, settleCompletion, WriteGate } from './completion.ts'
@@ -46,6 +48,7 @@ interface RuntimeSession {
   loadMode: string
   instanceId: string
   formValidationError?: string
+  expectedFormValues: Record<string, unknown>
   formBefore: Record<string, unknown>
   baseline: ExecutionBaselineRecorder
 }
@@ -410,183 +413,6 @@ async function formApiAvailable (page: Page, _mode: string): Promise<boolean> {
   })
 }
 
-// applyNodePatchViaPage 在页面内一次完成「数据接口解析 → 只写允许字段 → 回读完整值」。
-// 返回回读值；宿主缺失返回 null，由调用方按 unsupported 阻塞。
-async function applyNodePatchViaPage (page: Page, _mode: string, patch: Record<string, unknown>, allowedKeys: string[], identity: { userId: string, companyId: string }): Promise<Record<string, unknown> | null> {
-  return page.evaluate(async ({ patch, keys, identity }) => {
-    interface VNode { $children?: VNode[], $refs?: Record<string, unknown>, [key: string]: unknown }
-    const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown, forwardList?: unknown } }).__executorNative
-    const container = (native?.initFlow || native?.flowDetail || native?.forwardList) as VNode | undefined
-    if (!container) return null
-    const queue: unknown[] = [container]
-    const seen = new Set<unknown>()
-    let api: Record<string, unknown> | null = null
-    while (queue.length > 0 && api === null) {
-      const candidate = queue.shift()
-      if (!candidate || typeof candidate !== 'object' || seen.has(candidate)) continue
-      seen.add(candidate)
-      const value = candidate as Record<string, unknown>
-      if ((typeof value.setData === 'function' && typeof value.getValues === 'function') ||
-        (typeof value.setValues === 'function' && typeof value.getValues === 'function') ||
-        (typeof value.setFormData === 'function' && typeof value.getFormData === 'function')) api = value
-      queue.push(...((value.$children as unknown[] | undefined) ?? []), ...Object.values((value.$refs as Record<string, unknown> | undefined) ?? {}))
-    }
-    if (!api) return null
-    const setter = (api.setData ?? api.setValues ?? api.setFormData) as (values: Record<string, unknown>) => unknown
-    const getter = (api.getValues ?? api.getFormData) as () => unknown
-    // F-043 缺陷②：先读初始化后的表单值——表单初始化事件已按注入身份填好「当前用户」类字段。
-    const initValues = (await getter.call(api)) as Record<string, unknown> | null
-    const ids = [identity.userId, identity.companyId].filter(id => typeof id === 'string' && id.trim() !== '')
-    const isCurrentUser = (value: unknown): boolean => {
-      if (ids.length === 0 || value === null || value === undefined) return false
-      let text: string
-      try { text = typeof value === 'string' ? value : JSON.stringify(value) } catch { return false }
-      return !!text && ids.some(id => text.includes(id))
-    }
-    const companions = ['__virtualName', '__formPersonId', '__condition']
-    const picked: Record<string, unknown> = {}
-    for (const key of keys) {
-      // 当前用户字段由表单初始化事件按注入身份填好，不用历史发起人值覆盖（缺陷②）。
-      // 但若待写入补丁自身也是当前用户的值（例如带有完整中文名的选择器），则保留补丁，不予跳过。
-      if (initValues && isCurrentUser(initValues[key])) {
-        const patchVal = patch[key]
-        if (!(patchVal !== undefined && patchVal !== null && patchVal !== '' && isCurrentUser(patchVal))) {
-          continue
-        }
-      }
-      if (Object.prototype.hasOwnProperty.call(patch, key)) picked[key] = patch[key]
-      for (const suffix of companions) {
-        const companion = `${key}${suffix}`
-        if (Object.prototype.hasOwnProperty.call(patch, companion)) picked[companion] = patch[companion]
-      }
-    }
-    await setter.call(api, picked)
-    const values = await getter.call(api)
-    if (values === null || values === undefined || typeof values !== 'object') return null
-    return values as Record<string, unknown>
-  }, { patch, keys: allowedKeys, identity })
-}
-// restoreIntendedPatchViaPage 对比页面实时值与意图值，自动恢复被异步联动脚本误清空的有效意图值。
-async function restoreIntendedPatchViaPage (page: Page, _mode: string, patch: Record<string, unknown>, allowedKeys: string[], identity: { userId: string, companyId: string }): Promise<Record<string, unknown> | null> {
-  return page.evaluate(async ({ patch, keys, identity }) => {
-    interface VNode { $children?: VNode[], $refs?: Record<string, unknown>, [key: string]: unknown }
-    const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown, forwardList?: unknown } }).__executorNative
-    const container = (native?.initFlow || native?.flowDetail || native?.forwardList) as VNode | undefined
-    if (!container) return null
-    const queue: unknown[] = [container]
-    const seen = new Set<unknown>()
-    let api: Record<string, unknown> | null = null
-    while (queue.length > 0 && api === null) {
-      const candidate = queue.shift()
-      if (!candidate || typeof candidate !== 'object' || seen.has(candidate)) continue
-      seen.add(candidate)
-      const value = candidate as Record<string, unknown>
-      if ((typeof value.setData === 'function' && typeof value.getValues === 'function') ||
-        (typeof value.setValues === 'function' && typeof value.getValues === 'function') ||
-        (typeof value.setFormData === 'function' && typeof value.getFormData === 'function')) api = value
-      queue.push(...((value.$children as unknown[] | undefined) ?? []), ...Object.values((value.$refs as Record<string, unknown> | undefined) ?? {}))
-    }
-    if (!api) return null
-    const getter = (api.getValues ?? api.getFormData) as () => unknown
-    const setter = (api.setData ?? api.setValues ?? api.setFormData) as (values: Record<string, unknown>) => unknown
-    const current = (await getter.call(api)) as Record<string, unknown> | null
-    if (!current || typeof current !== 'object') return null
-    // F-043 缺陷②：当前用户字段由表单初始化事件按注入身份填好，联动回补时不得恢复历史发起人值。
-    const currentUserIds = [identity.userId, identity.companyId].filter(id => typeof id === 'string' && id.trim() !== '')
-    const isCurrentUserValue = (value: unknown): boolean => {
-      if (currentUserIds.length === 0 || value === null || value === undefined) return false
-      let text: string
-      try { text = typeof value === 'string' ? value : JSON.stringify(value) } catch { return false }
-      return !!text && currentUserIds.some(id => text.includes(id))
-    }
-
-    const restorePatch: Record<string, unknown> = {}
-    let needRestore = false
-
-    const parseId = (val: unknown): string | null => {
-      if (!val) return null
-      if (typeof val === 'object' && val !== null && 'id' in val && (val as { id?: unknown }).id) return String((val as { id?: unknown }).id)
-      if (typeof val === 'string' && val.trim().startsWith('{')) {
-        try {
-          const obj = JSON.parse(val)
-          if (obj && obj.id) return String(obj.id)
-        } catch {}
-      }
-      return null
-    }
-
-    for (const key of keys) {
-      const intended = patch[key]
-      const live = current[key]
-      if (isCurrentUserValue(live)) continue
-      if (intended === undefined || intended === null || intended === '') continue
-
-      if (Array.isArray(intended)) {
-        if (Array.isArray(live) && live.length > 0) {
-          let arrayChanged = false
-          const mergedArray = live.map((row, rIdx) => {
-            const intendedRow = intended[rIdx]
-            if (!intendedRow || typeof intendedRow !== 'object' || !row || typeof row !== 'object') return row
-            const newRow = { ...(row as Record<string, unknown>) }
-            for (const [col, colVal] of Object.entries(intendedRow as Record<string, unknown>)) {
-              if (colVal !== undefined && colVal !== null && colVal !== '' && (newRow[col] === undefined || newRow[col] === null || newRow[col] === '')) {
-                newRow[col] = colVal
-                arrayChanged = true
-              }
-            }
-            return newRow
-          })
-          if (arrayChanged) {
-            restorePatch[key] = mergedArray
-            needRestore = true
-          }
-        }
-        continue
-      }
-
-      const intendedId = parseId(intended)
-      if (intendedId) {
-        const liveId = parseId(live)
-        if (!liveId || liveId !== intendedId) {
-          restorePatch[key] = intended
-          needRestore = true
-          continue
-        }
-      }
-
-      if (live === undefined || live === null || live === '') {
-        restorePatch[key] = intended
-        needRestore = true
-      }
-    }
-
-    for (const [key, val] of Object.entries(current)) {
-      if (key.endsWith('_col') && (val === undefined || val === null || val === '')) {
-        const targetCol = key.slice(0, -4)
-        for (const listVal of Object.values(current)) {
-          if (Array.isArray(listVal) && listVal.length > 0) {
-            const firstRow = listVal[0]
-            if (firstRow && typeof firstRow === 'object' && targetCol in firstRow) {
-              const cVal = (firstRow as Record<string, unknown>)[targetCol]
-              if (cVal !== undefined && cVal !== null && cVal !== '') {
-                restorePatch[key] = cVal
-                needRestore = true
-                break
-              }
-            }
-          }
-        }
-      }
-    }
-
-    if (needRestore) {
-      await setter.call(api, restorePatch)
-      return (await getter.call(api)) as Record<string, unknown>
-    }
-    return current
-  }, { patch, keys: allowedKeys, identity })
-}
-
 // applyPlanIdentityViaPage 在数据落定后,用表单自身的初始化脚本(读注入身份的 localStorage)在空值探针下
 // 重算「当前用户」类字段(申请人/部门/公司等)的计划账号取值,只覆盖取值确实来自注入身份的字段。
 // 目标表单 refresh 初始化脚本对已有值字段用「仅空值填充」守卫跳过,历史回放时这些字段残留历史发起人,
@@ -834,7 +660,7 @@ function nativeURL (origin: string, payload: Record<string, unknown>): string {
   // 让实例重建类装载按实例真实平台（200001/999999）发目标请求；缺失时页面自身回落默认平台码。
   const platformCode = String(payload.platformCode ?? '')
   if (mode === 'initiate') {
-    const params = new URLSearchParams()
+    const params = nativeAuthQuery(payload)
     if (payload.selectFlowType) params.set('auditWay', String(payload.selectFlowType))
     if (payload.flowTemplateId) params.set('flowTemplateId', String(payload.flowTemplateId))
     if (payload.companyId) params.set('companyId', String(payload.companyId))
@@ -844,12 +670,14 @@ function nativeURL (origin: string, payload: Record<string, unknown>): string {
   }
   if (mode === 'forward') {
     const tab = String(payload.forwardTab ?? 'backlog')
-    const suffix = platformCode ? `&platformCode=${encodeURIComponent(platformCode)}` : ''
-    return `${origin}#/flow/approve/${encodeURIComponent(tab)}?tab=${encodeURIComponent(tab)}${suffix}`
+    const params = nativeAuthQuery(payload)
+    params.set('tab', tab)
+    if (platformCode) params.set('platformCode', platformCode)
+    return `${origin}#/flow/approve/${encodeURIComponent(tab)}?${params.toString()}`
   }
   const instanceId = String(payload.instanceId ?? '')
   const detailMode = mode === 'approve' ? 'audit' : mode
-  const params = new URLSearchParams()
+  const params = nativeAuthQuery(payload)
   params.set('mode', detailMode)
   if (platformCode) params.set('platformCode', platformCode)
   const relevance = Array.isArray(payload.flowInstanceBizRelevanceList) ? payload.flowInstanceBizRelevanceList : []
@@ -1004,6 +832,7 @@ async function main (): Promise<void> {
           nativeHost: null,
           loadMode: '',
           instanceId: '',
+          expectedFormValues: {},
           formBefore: {},
           baseline
         })
@@ -1298,6 +1127,7 @@ async function main (): Promise<void> {
           const changed = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : []
           const readonly = Array.isArray(payload.readonlyFields) ? payload.readonlyFields.map(String) : []
           const allowed = [...new Set([...changed, ...readonly])]
+          session.expectedFormValues = {}
           let patchReadback: Record<string, unknown> = {}
           if (allowed.length > 0) {
             // 表单宿主是异步渲染的（发起链 Steps1 监听 flowJson 自动 nextStep，
@@ -1320,22 +1150,20 @@ async function main (): Promise<void> {
             await waitForOptionsReady(session.route.trace, 900)
             session.baseline.end(loadStage, 'returned')
             loadStage = session.baseline.begin('existing_form_patch')
-            const readback = await applyNodePatchViaPage(session.page, mode, (payload.values ?? {}) as Record<string, unknown>, allowed, { userId: String(payload.userId ?? ''), companyId: String(payload.companyId ?? '') })
+            const hydrated = await session.page.evaluate(synchronizeNativeForm, {
+              phase: 'hydrate' as const, patch: (payload.values ?? {}) as Record<string, unknown>, keys: allowed,
+              identity: { userId: String(payload.userId ?? ''), companyId: String(payload.companyId ?? '') }
+            })
             session.baseline.end(loadStage, 'returned')
-            if (readback === null) {
+            if (hydrated === null) {
               throw new UnsupportedFormError('补丁应用时表单数据接口不可用')
             }
-            patchReadback = readback
-            // 回填后二次等待联动与远程请求收敛，并通用恢复被原生联动脚本误清空的非空意图值
+            patchReadback = hydrated.values
+            session.expectedFormValues = hydrated.expected
+            // 原生刷新后等待联动与远程请求收敛；不再按空值补丁覆盖一次，避免把搬移后的非空错误值放行。
             loadStage = session.baseline.begin('existing_options_wait_after_patch')
             await waitForOptionsReady(session.route.trace, 600)
             session.baseline.end(loadStage, 'returned')
-            loadStage = session.baseline.begin('existing_patch_restore')
-            const restoredReadback = await restoreIntendedPatchViaPage(session.page, mode, (payload.values ?? {}) as Record<string, unknown>, allowed, { userId: String(payload.userId ?? ''), companyId: String(payload.companyId ?? '') })
-            session.baseline.end(loadStage, 'returned')
-            if (restoredReadback !== null) {
-              patchReadback = restoredReadback
-            }
           }
           if (mode === 'initiate') {
             // 仅发起态:当前用户字段(申请人/部门/公司)应为计划发起账号。表单 refresh 初始化脚本的「仅空值填充」
@@ -1350,6 +1178,16 @@ async function main (): Promise<void> {
             session.baseline.end(loadStage, 'returned')
             if (identityReadback !== null) patchReadback = identityReadback
           }
+
+          // 身份探针中的请求和回调也必须结束，再核对实际写入意图；偏离即阻塞，不能伪报 ready。
+          await waitForOptionsReady(session.route.trace, 600)
+          loadStage = session.baseline.begin('form_values_verification')
+          const verified = Object.keys(session.expectedFormValues).length > 0
+            ? await session.page.evaluate(synchronizeNativeForm, { phase: 'verify' as const, expected: session.expectedFormValues })
+            : null
+          if (verified === null && allowed.length > 0) throw new UnsupportedFormError('表单值核对时数据接口不可用')
+          if (verified) patchReadback = verified.values
+          session.baseline.end(loadStage, 'returned')
 
           loadStage = session.baseline.begin('existing_form_snapshot_before')
           session.formBefore = await readNativeFormSnapshot(session.page)
@@ -1479,6 +1317,14 @@ async function main (): Promise<void> {
             session.baseline.end(actionStage, 'returned')
             let dispatchFacts: { component: string, method: string } | null = null
             if (!readOnly) {
+              // 点击前再读一次，防止 ready 之后的异步回调改错数据；这里只检查，不修正文或绕过目标校验。
+              actionStage = session.baseline.begin('form_values_before_dispatch')
+              const verified = Object.keys(session.expectedFormValues).length > 0
+                ? await session.page.evaluate(synchronizeNativeForm, { phase: 'verify' as const, expected: session.expectedFormValues })
+                : null
+              if (verified === null && Object.keys(session.expectedFormValues).length > 0) throw new UnsupportedFormError('动作前表单数据接口不可用')
+              if (verified) session.formBefore = verified.values
+              session.baseline.end(actionStage, 'returned')
               const payload = (envelope.payload ?? {}) as { auditDesc?: string, loadMode?: string, nextNodeAuditors?: DispatchInput['nextNodeAuditors'] }
               actionStage = session.baseline.begin('native_dispatch_evaluate')
               dispatchFacts = await session.baseline.invoke('native_dispatch_invocation', () => dispatchBusinessAction(session.page, {
