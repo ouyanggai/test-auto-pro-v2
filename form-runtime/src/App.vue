@@ -17,7 +17,7 @@
 
 <script>
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
-import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPatches, formRuntimeStats, formValuesFingerprint, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents, restoreIntendedValues } from './runtime/formTemplate'
+import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPatches, formRuntimeStats, formValuesFingerprint, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents, restoreIntendedValues, seedFormRefreshValues } from './runtime/formTemplate'
 import { createTargetRequestTracker, installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
@@ -228,6 +228,9 @@ export default {
         if (this.renderType === 'formmaking') {
           const host = this.$refs.formHost
           if (!host) throw new Error('目标表单宿主尚未完成装载')
+          const form = this.form()
+          if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
+          seedFormRefreshValues(form, this.values)
           host.enableData = [...this.editableFields]
           host.disabledData = this.allFields.filter(field => !this.editableFields.includes(field))
           host.jsonData = clonePlain(this.template)
@@ -235,8 +238,6 @@ export default {
           await this.$nextTick()
 			this.assertActiveSession(loadContext)
           this.bindFormChange()
-          const form = this.form()
-          if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
           await form.setData(clonePlain(this.values))
 			this.assertActiveSession(loadContext)
           await this.$nextTick()
@@ -347,9 +348,10 @@ export default {
       }
       const host = this.$refs.formHost
       if (host) {
-        host.editData = clonePlain(values)
         const form = this.form()
         if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
+        seedFormRefreshValues(form, values)
+        host.editData = clonePlain(values)
         await form.setData(clonePlain(values))
 		this.assertActiveSession(context)
         await this.$nextTick()

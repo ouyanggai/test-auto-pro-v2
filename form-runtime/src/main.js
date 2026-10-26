@@ -1,6 +1,11 @@
 import App from './App.vue'
+import Vue from 'vue'
 import '@runtime/main.js'
 import { FORM_RUNTIME_VERSION } from './runtime/protocol'
+import { formComponentLifecycle } from './runtime/formComponentLifecycle'
+
+// 配置宿主在 load 后才创建；提前安装原生注册组件的清理桥接，覆盖首次装载及宿主自行触发的刷新。
+Vue.mixin(formComponentLifecycle)
 
 // 配置 iframe 入口版本标识：探针据此确认加载的是真实 runtime。
 window.__formRuntimeVersion__ = FORM_RUNTIME_VERSION

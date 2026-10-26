@@ -230,11 +230,18 @@ export function buildValuesEnvelope ({ values, validated, unsupported, dirty, st
 	}
 }
 
+// seedFormRefreshValues 同步原生刷新使用的初始化快照；FormMaking 只在创建时从 value 保存 formValue，后续 setData 不更新它。
+// 必须在宿主 editData 触发异步 refresh 前写入，保证初始化联动按当前整份数据生成布局，而不是先用默认值再只补回字段值。
+export function seedFormRefreshValues (form, values) {
+  form.formValue = clonePlain(values || {})
+}
+
 // refreshPreparedForm 只刷新已预先写入权限的模板，避免目标自定义组件因缺少 disabledElement 被统一运行时禁用调用击穿。
-// FormMaking 的 refresh 会重新初始化模板并清空 models；因此刷新前捕获当前值、刷新后回填，避免用户已填数据被清空。
+// 刷新前同步快照让原生初始化联动读取当前值；刷新后仍保留原有回填，不能把初始化当成用户逐项修改而搬移或清空金额。
 export async function refreshPreparedForm (form) {
   if (!form || typeof form.refresh !== 'function') throw new Error('目标 FormMaking 运行时缺少 refresh 能力')
   const current = typeof form.getValues === 'function' ? form.getValues() : null
+  if (current != null) seedFormRefreshValues(form, current)
   await form.refresh()
   if (current != null && typeof form.setData === 'function') await form.setData(current)
 }
