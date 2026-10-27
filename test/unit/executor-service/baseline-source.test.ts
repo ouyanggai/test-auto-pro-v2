@@ -34,9 +34,33 @@ test('缺失元数据和产物明确未知，部署与 FormMaking 源码版本�
   assert.equal(result.formMakingSourceHead, 'unknown')
   assert.ok(typeof result.capturedAt === 'string')
   assert.ok(Number.isFinite(Date.parse(result.capturedAt)))
-  assert.deepEqual(result.flowSourceManifest, { state: 'unknown', head: 'unknown', branch: 'unknown' })
-  assert.deepEqual(result.flowSource, { state: 'unknown', head: 'unknown', branch: 'unknown', digest: 'unknown', syncedAt: 'unknown' })
-  assert.deepEqual(result.nativePageBuild, { state: 'unknown', inputDigest: 'unknown', builtAt: 'unknown' })
+  assert.deepEqual(result.flowSourceManifest, { state: 'unknown', mappingVersion: 'unknown' })
+  assert.deepEqual(result.flowSource, {
+    state: 'unknown',
+    mappingVersion: 'unknown',
+    mappingHash: 'unknown',
+    candidateDigest: 'unknown',
+    baseRepository: 'unknown',
+    baseRemote: 'unknown',
+    baseBranch: 'unknown',
+    baseHead: 'unknown',
+    baseDigest: 'unknown',
+    businessRepository: 'unknown',
+    businessRemote: 'unknown',
+    businessBranch: 'unknown',
+    businessHead: 'unknown',
+    businessDigest: 'unknown',
+    preparedAt: 'unknown'
+  })
+  assert.deepEqual(result.nativePageBuild, {
+    state: 'unknown',
+    inputDigest: 'unknown',
+    candidateDigest: 'unknown',
+    baseHead: 'unknown',
+    businessHead: 'unknown',
+    mappingHash: 'unknown',
+    builtAt: 'unknown'
+  })
   assert.deepEqual(result.formMakingArtifact, { state: 'unknown', sha256: 'unknown', bytes: 'unknown' })
 })
 
@@ -46,22 +70,96 @@ test('损坏 JSON 与非对象 JSON 不抛错也不伪造已知字段', context 
   writeFixture(root, 'flow-source.json', '["not-metadata"]')
   writeFixture(root, path.join('flow-source', '.native-page-build.json'), 'null')
   const result = readBaselineSource(root)
-  assert.deepEqual(result.flowSourceManifest, { state: 'unknown', head: 'unknown', branch: 'unknown' })
-  assert.deepEqual(result.flowSource, { state: 'unknown', head: 'unknown', branch: 'unknown', digest: 'unknown', syncedAt: 'unknown' })
-  assert.deepEqual(result.nativePageBuild, { state: 'unknown', inputDigest: 'unknown', builtAt: 'unknown' })
+  assert.deepEqual(result.flowSourceManifest, { state: 'unknown', mappingVersion: 'unknown' })
+  assert.deepEqual(result.flowSource, {
+    state: 'unknown',
+    mappingVersion: 'unknown',
+    mappingHash: 'unknown',
+    candidateDigest: 'unknown',
+    baseRepository: 'unknown',
+    baseRemote: 'unknown',
+    baseBranch: 'unknown',
+    baseHead: 'unknown',
+    baseDigest: 'unknown',
+    businessRepository: 'unknown',
+    businessRemote: 'unknown',
+    businessBranch: 'unknown',
+    businessHead: 'unknown',
+    businessDigest: 'unknown',
+    preparedAt: 'unknown'
+  })
+  assert.deepEqual(result.nativePageBuild, {
+    state: 'unknown',
+    inputDigest: 'unknown',
+    candidateDigest: 'unknown',
+    baseHead: 'unknown',
+    businessHead: 'unknown',
+    mappingHash: 'unknown',
+    builtAt: 'unknown'
+  })
 })
 
 test('已有元数据只读允许字段，FormMaking 摘要来自原始字节而不是文本', context => {
   const root = createFixtureRoot(context)
-  writeFixture(root, 'flow-source-manifest.json', JSON.stringify({ head: 'manifest-head', branch: 'test', password: 'must-not-copy' }))
-  writeFixture(root, 'flow-source.json', JSON.stringify({ head: 'source-head', branch: 'test', digest: 'source-digest', syncedAt: '2026-10-13T00:00:00.000Z', sid: 'must-not-copy' }))
-  writeFixture(root, path.join('flow-source', '.native-page-build.json'), JSON.stringify({ inputDigest: 'build-digest', builtAt: '2026-10-13T01:00:00.000Z', deployedVersion: 'must-not-infer' }))
+  writeFixture(root, 'flow-source-manifest.json', JSON.stringify({ schemaVersion: 2, mappingVersion: 'f053-test', password: 'must-not-copy' }))
+  writeFixture(root, 'flow-source.json', JSON.stringify({
+    schemaVersion: 2,
+    repository: 'composed-flow-source',
+    mappingVersion: 'f053-test',
+    mappingHash: 'mapping-hash',
+    candidateDigest: 'candidate-digest',
+    baseRepository: 'rsh-flow-components',
+    baseRemote: 'base-remote',
+    baseBranch: 'test',
+    baseHead: 'base-head',
+    baseDigest: 'base-digest',
+    businessRepository: 'rsh-cloud-invest-power-system',
+    businessRemote: 'business-remote',
+    businessBranch: 'test',
+    businessHead: 'business-head',
+    businessDigest: 'business-digest',
+    preparedAt: '2026-10-13T00:00:00.000Z',
+    sid: 'must-not-copy'
+  }))
+  writeFixture(root, path.join('flow-source', '.native-page-build.json'), JSON.stringify({
+    inputDigest: 'build-digest',
+    candidateDigest: 'candidate-digest',
+    baseHead: 'base-head',
+    businessHead: 'business-head',
+    mappingHash: 'mapping-hash',
+    builtAt: '2026-10-13T01:00:00.000Z',
+    deployedVersion: 'must-not-infer'
+  }))
   const artifact = Buffer.from([0, 255, 13, 10, 128, 97, 98, 99])
   writeFixture(root, path.join('flow-source', 'src', 'lib', 'vue-form-making', 'dist', 'FormMaking.common.js'), artifact)
   const result = readBaselineSource(root)
-  assert.deepEqual(result.flowSourceManifest, { state: 'available', head: 'manifest-head', branch: 'test' })
-  assert.deepEqual(result.flowSource, { state: 'available', head: 'source-head', branch: 'test', digest: 'source-digest', syncedAt: '2026-10-13T00:00:00.000Z' })
-  assert.deepEqual(result.nativePageBuild, { state: 'available', inputDigest: 'build-digest', builtAt: '2026-10-13T01:00:00.000Z' })
+  assert.deepEqual(result.flowSourceManifest, { state: 'available', mappingVersion: 'f053-test' })
+  assert.deepEqual(result.flowSource, {
+    state: 'available',
+    mappingVersion: 'f053-test',
+    mappingHash: 'mapping-hash',
+    candidateDigest: 'candidate-digest',
+    baseRepository: 'rsh-flow-components',
+    baseRemote: 'base-remote',
+    baseBranch: 'test',
+    baseHead: 'base-head',
+    baseDigest: 'base-digest',
+    businessRepository: 'rsh-cloud-invest-power-system',
+    businessRemote: 'business-remote',
+    businessBranch: 'test',
+    businessHead: 'business-head',
+    businessDigest: 'business-digest',
+    preparedAt: '2026-10-13T00:00:00.000Z'
+  })
+  assert.deepEqual(result.nativePageBuild, {
+    state: 'available',
+    inputDigest: 'build-digest',
+    candidateDigest: 'candidate-digest',
+    baseHead: 'base-head',
+    businessHead: 'business-head',
+    mappingHash: 'mapping-hash',
+    builtAt: '2026-10-13T01:00:00.000Z'
+  })
   assert.deepEqual(result.formMakingArtifact, { state: 'available', sha256: crypto.createHash('sha256').update(artifact).digest('hex'), bytes: artifact.length })
   assert.equal(result.deployedVersion, 'unknown')
   assert.equal(result.formMakingSourceHead, 'unknown')
@@ -71,9 +169,13 @@ test('已有元数据只读允许字段，FormMaking 摘要来自原始字节而
 
 test('缺失或类型错误的元数据字段仍为未知，不作字符串强制转换', context => {
   const root = createFixtureRoot(context)
-  writeFixture(root, 'flow-source.json', JSON.stringify({ head: 123, branch: 'test', digest: '', syncedAt: null }))
+  writeFixture(root, 'flow-source.json', JSON.stringify({ baseHead: 123, businessBranch: 'test', candidateDigest: '', preparedAt: null }))
   const result = readBaselineSource(root)
-  assert.deepEqual(result.flowSource, { state: 'available', head: 'unknown', branch: 'test', digest: 'unknown', syncedAt: 'unknown' })
+  assert.equal(result.flowSource.state, 'available')
+  assert.equal(result.flowSource.baseHead, 'unknown')
+  assert.equal(result.flowSource.businessBranch, 'test')
+  assert.equal(result.flowSource.candidateDigest, 'unknown')
+  assert.equal(result.flowSource.preparedAt, 'unknown')
 })
 
 test('文件位置变为目录的读取错误只保留未知，不使采集失败', context => {
@@ -81,6 +183,6 @@ test('文件位置变为目录的读取错误只保留未知，不使采集失�
   fs.mkdirSync(path.join(root, 'flow-source-manifest.json'))
   fs.mkdirSync(path.join(root, 'flow-source', 'src', 'lib', 'vue-form-making', 'dist', 'FormMaking.common.js'), { recursive: true })
   const result = readBaselineSource(root)
-  assert.deepEqual(result.flowSourceManifest, { state: 'unknown', head: 'unknown', branch: 'unknown' })
+  assert.deepEqual(result.flowSourceManifest, { state: 'unknown', mappingVersion: 'unknown' })
   assert.deepEqual(result.formMakingArtifact, { state: 'unknown', sha256: 'unknown', bytes: 'unknown' })
 })

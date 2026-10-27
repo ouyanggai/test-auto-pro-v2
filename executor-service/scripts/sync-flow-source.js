@@ -1,323 +1,481 @@
 #!/usr/bin/env node
 
-// T002（Windows 迁移修订）：flow-source 不再复制任何本机静态目录，改为直接 git 同步参考仓库。
-//
-// 旧实现把原项目在 macOS 外接盘上的绝对路径整体复制成快照，导致：
-//   ① 依赖只在 Mac 上存在的挂载盘路径，迁移到 Windows 后必然报「原项目不存在」；
-//   ② 快照脱离版本控制，无法判断本地是否被改脏；
-//   ③ 与 form-runtime 的 sync-manifest 出现两套来源口径。
-// 现统一为：从固定远端 + 固定分支 clone/快进，路径全部相对工作区解析。
+// F-053：把独立的 /flow 基座与全过程 test 业务代码合成为一次发布候选。
+// 目标业务仓库只读取远端 Git 对象，不复制用户工作树，也不修改用户分支。
 import childProcess from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  assertSafeRelativePath,
+  canonicalJson,
+  digestDirectory,
+  digestFiles
+} from './source-integrity.js'
 
-const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const workspaceRoot = path.resolve(serviceRoot, '..')
+const defaultServiceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const serviceRoot = path.resolve(process.env.EXECUTOR_SOURCE_ROOT || defaultServiceRoot)
+const workspaceRoot = path.resolve(process.env.EXECUTOR_WORKSPACE_ROOT || path.join(serviceRoot, '..'))
 const manifestPath = path.join(serviceRoot, 'flow-source-manifest.json')
 const targetRoot = path.join(serviceRoot, 'flow-source')
 const metadataPath = path.join(serviceRoot, 'flow-source.json')
-const lockPath = path.join(serviceRoot, 'flow-source.lock.json')
-const configRuntime = path.join(workspaceRoot, 'form-runtime', 'runtime-source')
-
-// SKIP_NAMES 是与运行时无关的本机噪声，git checkout 之后按需清理，不进构建输入。
-const SKIP_NAMES = new Set(['.git', 'node_modules', '.npmrc', '.claude', '.omc', '.DS_Store', '__MACOSX'])
+const formMakingRoot = path.join(workspaceRoot, 'form-runtime', 'runtime-source')
+const generatedTargetName = 'flow-source'
+const sensitiveSuffixes = new Set([
+  '.key',
+  '.pem',
+  '.log',
+  '.crt',
+  '.cer',
+  '.p12',
+  '.pfx',
+  '.jks',
+  '.der'
+])
 
 function fail (message) {
   process.stderr.write(`错误：${message}\n`)
-  process.exit(1)
+  process.exitCode = 1
+  throw new Error(message)
 }
 
-// git 只执行固定只读参数并返回文本；调用方负责保证参数来自清单，不接受任意输入。
-function git (root, args, options = {}) {
-  return childProcess.execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 30000, ...options }).trim()
-}
-// gitRaw 与 git 相同，但不裁剪首尾空白。
-// porcelain 状态行的第一列就是「暂存区状态」，为空时是一个前导空格；
-// 用 git() 的 trim() 会把第一行的前导空格吃掉，导致把「未暂存的删除」误读成「已暂存的修改」。
-function gitRaw (root, args) {
-  return childProcess.execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' })
+// runGit 在隔离临时仓库内执行固定 Git 参数，任何失败都中断候选准备。
+function runGit (root, args) {
+  try {
+    return childProcess.execFileSync('git', ['-C', root, ...args], {
+      encoding: 'utf8',
+      timeout: 120000,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+  } catch (error) {
+    const detail = error?.stderr ? String(error.stderr).trim() : String(error?.message ?? error)
+    throw new Error(`Git ${args.join(' ')} 失败：${detail}`)
+  }
 }
 
-// readManifest 读取本项目固定同步清单；远端、分支和目标目录都不允许由命令行或环境变量覆盖。
+// readJson 只读取本项目清单或本机状态文件，不接受命令行覆盖来源。
+function readJson (filePath, label) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+  } catch (error) {
+    throw new Error(`${label}不可读：${filePath}（${String(error?.message ?? error)}）`)
+  }
+}
+
+// readManifest 校验双来源、完整基座提交号和受控业务映射。
 function readManifest () {
-  try {
-    return JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
-  } catch (error) {
-    fail(`同步清单不可读：${manifestPath}（${String(error?.message ?? error)}）`)
+  const manifest = readJson(manifestPath, '执行器来源清单')
+  if (manifest.schemaVersion !== 2 || !manifest.base || !manifest.business || !Array.isArray(manifest.mappings)) {
+    throw new Error('执行器来源清单必须使用 F-053 双来源格式')
+  }
+  for (const source of [manifest.base, manifest.business]) {
+    if (!source.repository || !source.remote || !source.branch) throw new Error('来源清单缺少 repository、remote 或 branch')
+  }
+  if (!/^[0-9a-f]{40}$/.test(String(manifest.base.head))) {
+    throw new Error(`基座 head 必须是完整提交号：${manifest.base.head}`)
+  }
+  if (!manifest.mappingVersion) throw new Error('来源清单缺少 mappingVersion')
+  return manifest
+}
+
+// assertGeneratedPath 只允许删除本脚本在 serviceRoot 下创建的临时目录或候选目录。
+function assertGeneratedPath (target, expectedName) {
+  const resolvedRoot = path.resolve(serviceRoot)
+  const resolvedTarget = path.resolve(target)
+  if (path.dirname(resolvedTarget) !== resolvedRoot || path.basename(resolvedTarget) !== expectedName) {
+    throw new Error(`拒绝操作工作区外目录：${resolvedTarget}`)
   }
 }
 
-// readLock 读取上次同步落盘的锁文件；首次同步没有锁文件，按全量同步处理。
-function readLock () {
-  if (!fs.existsSync(lockPath)) return null
-  try {
-    return JSON.parse(fs.readFileSync(lockPath, 'utf8'))
-  } catch {
-    return null
-  }
-}
-
-// digestDirectory 计算目录内容摘要，用于证明「同一版本的 flow-source 字节一致」。
-// 元数据文件本身不参与摘要，避免自引用导致每次都判定为变化。
-//
-// dist/ 是 build-native-page 在本机生成的页面产物，不属于 git 同步内容，
-// 也不参与摘要：它是构建结果而非源码，纳入摘要会让「同步后摘要」随构建而变。
-function digestDirectory (root) {
-  const hash = crypto.createHash('sha256')
-  const files = []
-  const visit = (directory, prefix) => {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      if (SKIP_NAMES.has(entry.name)) continue
-      const relative = prefix ? `${prefix}/${entry.name}` : entry.name
-      if (relative === 'dist' || relative.startsWith('dist/')) continue
-      if (entry.isDirectory()) visit(path.join(directory, entry.name), relative)
-      else files.push(relative)
-    }
-  }
-  visit(root, '')
-  for (const relative of files.sort()) {
-    hash.update(relative)
-    hash.update('\0')
-    hash.update(fs.readFileSync(path.join(root, relative)))
-    hash.update('\0')
-  }
-  return hash.digest('hex')
-}
-
-// removeNoise 清掉 git checkout 之后仍可能存在的本机噪声目录（.DS_Store 等不参与摘要，但也无意义留盘）。
-function removeNoise (root) {
-  for (const name of SKIP_NAMES) {
-    if (name === '.git') continue
-    fs.rmSync(path.join(root, name), { recursive: true, force: true })
-  }
-}
-
-// isCheckedOutAt 判断目标目录当前是否就是「清单远端 + 清单分支 + 清单 HEAD」的受控检出。
-// 这是幂等判据，不使用时间戳或本地缓存。
-//
-// 脏判据必须只看「内容被改动」的文件，不能把「脚本主动删除的本机噪声」也算脏：
-// .npmrc/.claude/.omc 是上游 tracked 文件，removeNoise 会按设计删掉它们，
-// status 于是长期显示 ` D`。若把这些删除也算脏，同步永远判不出「已是最新」，
-// 每次执行都会整个重新 clone（实测每次都重新下载 722 个文件）。
-// 因此这里只放行 status 第一列（暂存区）为空、第二列仅为 `D` 的行，
-// 任何内容修改（M）、新增或暂存改动仍然判定为脏并触发重新同步。
-function isCheckedOutAt (manifest, head) {
-  if (!fs.existsSync(path.join(targetRoot, '.git'))) return false
-  const remote = git(targetRoot, ['remote', 'get-url', 'origin'])
-  if (remote !== manifest.remote) return false
-  if (git(targetRoot, ['rev-parse', 'HEAD']) !== head) return false
-  if (hasContentChanges()) return false
-  return git(targetRoot, ['ls-tree', '-r', '--name-only', 'HEAD']).length > 0
-}
-
-// hasContentChanges 判断工作树里是否存在「本机噪声删除」以外的任何变化。
-// 必须用 gitRaw：porcelain 行的首列空白是有意义的（空格=暂存区无变化）。
-function hasContentChanges () {
-  const lines = gitRaw(targetRoot, ['status', '--porcelain', '--untracked-files=no'])
-    .split('\n')
-    .map(line => line.trimEnd())
-    .filter(line => line !== '')
-  return lines.some(line => {
-    const index = line[0]
-    const worktree = line[1]
-    // 只允许「未暂存的工作树删除」这一种状态；其余一律视为有真实变化。
-    return index !== ' ' || worktree !== 'D'
-  })
-}
-
-// cloneAt 做一次干净克隆:先在同级临时目录 fetch+检出,成功后再原子替换 flow-source。
-// 旧实现先 rmSync(targetRoot) 再就地 fetch:任何 fetch 超时或网络抖动都会把已有工作副本
-//(含 babel.config.js、dist、node_modules)清空成半截目录且无法回退--这正是本次启动故障的根因。
-// 改为「临时目录克隆成功 -> 删旧 -> 改名」后,克隆失败时旧目录原样保留,启动仍可回落到本地版本。
-// 不直接 clone --branch 是为了在同一处统一处理锁定的 commit(分支 HEAD 已前移时仍可复现)。
-function cloneAt (manifest, head, remoteOverride) {
-  const remote = remoteOverride || manifest.remote
-  const tempRoot = `${targetRoot}.sync-${process.pid}`
-  fs.rmSync(tempRoot, { recursive: true, force: true })
-  fs.mkdirSync(tempRoot, { recursive: true })
-  try {
-    git(tempRoot, ['init', '--quiet'])
-    git(tempRoot, ['remote', 'add', 'origin', remote])
-    git(tempRoot, ['fetch', '--quiet', '--depth', '1', 'origin', head])
-    git(tempRoot, ['checkout', '--quiet', '--detach', 'FETCH_HEAD'])
-    git(tempRoot, ['branch', '--quiet', '--force', manifest.branch, 'HEAD'])
-    removeNoise(tempRoot)
-  } catch (error) {
-    // 克隆失败必须清掉半截临时目录,绝不留下污染下次判断的残骸,再把原始错误抛给调用方降级处理。
-    fs.rmSync(tempRoot, { recursive: true, force: true })
-    throw error
-  }
-  // 成功后才动真实目录:替换窗口极短;上面任一步失败都已 throw,targetRoot 全程未被触碰。
-  fs.rmSync(targetRoot, { recursive: true, force: true })
-  fs.renameSync(tempRoot, targetRoot)
-}
-// assertNotConfigRuntime 挡住把 flow-source 指向 form-runtime 运行源码的误配置：
-// 两者都必须各自独立，跨用会让执行服务装载与表单运行时互相污染。
-function assertNotConfigRuntime () {
-  if (!fs.existsSync(configRuntime)) return
-  if (path.resolve(targetRoot) === path.resolve(configRuntime)) {
-    fail('flow-source 目标不能是 form-runtime/runtime-source')
-  }
-}
-
-// FORMMAKING_RELATIVE 是 FormMaking 产物在仓库内的固定位置。
-const FORMMAKING_RELATIVE = path.join('src', 'lib', 'vue-form-making', 'dist')
-// FORMMAKING_ENTRY 是运行时必须存在的入口文件；只校验目录存在会把半截产物当成功。
-const FORMMAKING_ENTRY = 'FormMaking.common.js'
-
-// stageFormMaking 把 FormMaking 构建产物放进 clone 出来的 flow-source。
-//
-// 为什么必须单独补：rsh-flow-components 的 Git 只跟踪 src/lib/vue-form-making/package.json，
-// dist 是构建产物且被上游忽略（`git ls-tree` 实测只剩一个 package.json）。
-// 产物在 form-runtime 侧作为 preservedTargetPaths 受控保存，是工作区里唯一可信副本；
-// 这里只做「复制 + 逐字节校验」，绝不自己编译，避免产物来源出现第二个口径。
-function stageFormMaking () {
-  const target = path.join(targetRoot, FORMMAKING_RELATIVE)
-  const source = path.join(configRuntime, FORMMAKING_RELATIVE)
-  const targetEntry = path.join(target, FORMMAKING_ENTRY)
-  const sourceEntry = path.join(source, FORMMAKING_ENTRY)
-
-  if (fs.existsSync(targetEntry)) {
-    process.stdout.write('[OK] FormMaking 产物已在快照内\n')
-    return
-  }
-  if (!fs.existsSync(sourceEntry)) {
-    fail(`缺少 FormMaking 产物：${sourceEntry}（受控副本不存在，拒绝自行编译）`)
-  }
-
+// removeGeneratedPath 删除已核实的候选路径，避免错误变量导致递归删除越界。
+function removeGeneratedPath (target, expectedName) {
+  assertGeneratedPath(target, expectedName)
   fs.rmSync(target, { recursive: true, force: true })
-  fs.mkdirSync(path.dirname(target), { recursive: true })
-  fs.cpSync(source, target, { recursive: true })
-
-  // 逐字节校验：复制后必须与受控副本完全一致，否则装载原生 /flow 页面会用到未知产物。
-  if (digestDirectory(target) !== digestDirectory(source)) {
-    fail('FormMaking 产物复制后与受控副本不一致')
-  }
-  process.stdout.write('[OK] FormMaking 产物已从受控副本补齐\n')
 }
 
+// resolveRemoteCandidates 为基座 SSH 远端提供等价 HTTP 候选；全过程远端保持清单原值。
 function resolveRemoteCandidates (remote) {
   const candidates = [remote]
-  // 内网 GitLab 在 Windows/Node 环境下若 SSH 密钥未加载，提供等价 HTTP 路径作为自动降级候选。
   if (remote.startsWith('git@') && remote.includes(':')) {
     const match = remote.match(/^git@([^:]+):(.+)$/)
-    if (match) {
-      candidates.push(`http://${match[1]}/${match[2]}`)
-    }
+    if (match) candidates.push(`http://${match[1]}/${match[2]}`)
   }
   return candidates
 }
 
-// fetchRemoteLatestHEAD 尝试探测远端最新 HEAD。
-function fetchRemoteLatestHEAD (manifest) {
-  const candidates = resolveRemoteCandidates(manifest.remote)
+// resolveBranchHead 只从远端分支读取最新完整 SHA；不可达或分支不存在都必须失败。
+function resolveBranchHead (source, allowFallbackCandidates) {
+  const candidates = allowFallbackCandidates ? resolveRemoteCandidates(source.remote) : [source.remote]
+  let lastError = ''
   for (const remote of candidates) {
     try {
-      const output = childProcess.execFileSync('git', ['ls-remote', remote, `refs/heads/${manifest.branch}`], {
+      const output = childProcess.execFileSync('git', ['ls-remote', remote, `refs/heads/${source.branch}`], {
         encoding: 'utf8',
-        timeout: 10000
+        timeout: 30000,
+        stdio: ['ignore', 'pipe', 'pipe']
       }).trim()
-      if (output) {
-        const match = output.match(/^([0-9a-f]{40})\s+/)
-        if (match) return { head: match[1], remote }
-      }
-    } catch {
-      // 继续尝试下一候选
+      const match = output.match(/^([0-9a-f]{40})\s+refs\/heads\/\S+$/m)
+      if (match) return { ...source, fetchRemote: remote, head: match[1] }
+      lastError = `远端没有 refs/heads/${source.branch}`
+    } catch (error) {
+      lastError = String(error?.stderr || error?.message || error).trim()
     }
   }
-  return null
+  throw new Error(`${source.repository} ${source.remote} 不可达或分支不存在：${lastError}`)
+}
+
+// cloneAt 在 serviceRoot 下创建一次隔离 Git 对象仓库，成功后才允许读取源码。
+function cloneAt (source, name) {
+  const cloneName = `${name}-${process.pid}`
+  const cloneRoot = path.join(serviceRoot, cloneName)
+  assertGeneratedPath(cloneRoot, cloneName)
+  removeGeneratedPath(cloneRoot, cloneName)
+  fs.mkdirSync(cloneRoot, { recursive: true })
+  try {
+    runGit(cloneRoot, ['init', '--quiet'])
+    runGit(cloneRoot, ['remote', 'add', 'origin', source.fetchRemote || source.remote])
+    runGit(cloneRoot, ['fetch', '--quiet', '--depth', '1', 'origin', source.head])
+    runGit(cloneRoot, ['checkout', '--quiet', '--detach', 'FETCH_HEAD'])
+    return cloneRoot
+  } catch (error) {
+    removeGeneratedPath(cloneRoot, cloneName)
+    throw error
+  }
+}
+
+// listTrackedEntries 读取 Git 树并拒绝符号链接和子模块，保证候选只包含普通文件字节。
+function listTrackedEntries (repositoryRoot) {
+  const raw = runGit(repositoryRoot, ['ls-tree', '-r', '-z', '--full-tree', 'HEAD'])
+  const entries = []
+  for (const record of raw.split('\0').filter(Boolean)) {
+    const separator = record.indexOf('\t')
+    if (separator < 0) throw new Error(`Git 树记录格式非法：${record}`)
+    const header = record.slice(0, separator)
+    const relative = assertSafeRelativePath(record.slice(separator + 1), 'Git 树路径')
+    const mode = header.split(' ')[0]
+    if (mode === '120000' || mode === '160000') {
+      throw new Error(`Git 来源不能包含符号链接或子模块：${relative}`)
+    }
+    if (mode !== '100644' && mode !== '100755') throw new Error(`Git 来源文件模式不受支持：${relative}`)
+    entries.push({ relative, mode })
+  }
+  return entries
+}
+
+// isExcluded 判断映射相对路径是否命中受保护的运行时文件或清单排除项。
+function isExcluded (relative, patterns = []) {
+  return patterns.some(pattern => {
+    const normalized = pattern.replaceAll('\\', '/').replace(/\/+$/, '')
+    return normalized.endsWith('/**')
+      ? relative === normalized.slice(0, -3) || relative.startsWith(`${normalized.slice(0, -3)}/`)
+      : relative === normalized
+  })
+}
+
+// isSensitivePath 阻止业务映射把凭证、私钥和日志带入执行器候选。
+function isSensitivePath (relative) {
+  const normalized = relative.replaceAll('\\', '/')
+  const name = path.posix.basename(normalized)
+  return name.startsWith('.env') || sensitiveSuffixes.has(path.posix.extname(name).toLowerCase())
+}
+
+// copyFileFromRepository 逐字节复制隔离仓库文件，并再次核对目标不是符号链接。
+function copyFileFromRepository (repositoryRoot, sourceRelative, candidateRoot, destinationRelative) {
+  const source = path.join(repositoryRoot, sourceRelative)
+  const destination = path.join(candidateRoot, destinationRelative)
+  const sourceStat = fs.lstatSync(source)
+  if (!sourceStat.isFile()) throw new Error(`Git 来源不是普通文件：${sourceRelative}`)
+  fs.mkdirSync(path.dirname(destination), { recursive: true })
+  fs.copyFileSync(source, destination)
+}
+
+// candidateFilesUnder 列出候选目录内的普通文件，供映射清理和冲突核对使用。
+function candidateFilesUnder (candidateRoot, relativeRoot) {
+  const root = path.join(candidateRoot, relativeRoot)
+  if (!fs.existsSync(root)) return []
+  const files = []
+  const visit = (directory, prefix) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name
+      const absolute = path.join(directory, entry.name)
+      if (entry.isSymbolicLink()) throw new Error(`候选源码不能包含符号链接：${relative}`)
+      if (entry.isDirectory()) visit(absolute, relative)
+      else files.push(relative)
+    }
+  }
+  visit(root, '')
+  return files
+}
+
+// collectMappingFiles 将业务 Git 树映射到候选路径，同时拒绝缺失源、重复目标和受保护冲突。
+function collectMappingFiles (repositoryRoot, manifest) {
+  const entries = listTrackedEntries(repositoryRoot)
+  const entrySet = new Set(entries.map(entry => entry.relative))
+  const destinations = new Map()
+  const selected = []
+  for (const mapping of manifest.mappings) {
+    const source = assertSafeRelativePath(mapping.source, '业务映射源')
+    const destination = assertSafeRelativePath(mapping.destination, '业务映射目标')
+    if (!['file', 'directory'].includes(mapping.kind)) throw new Error(`业务映射类型不受支持：${mapping.kind}`)
+    const candidates = mapping.kind === 'file'
+      ? [source]
+      : entries.filter(entry => entry.relative === source || entry.relative.startsWith(`${source}/`)).map(entry => entry.relative)
+    if (!candidates.length) throw new Error(`业务映射源不存在：${source}`)
+    let selectedFromSource = 0
+    for (const sourceRelative of candidates) {
+      const mappingRelative = mapping.kind === 'file'
+        ? path.posix.basename(sourceRelative)
+        : sourceRelative.slice(source.length + 1)
+      if (isExcluded(mappingRelative, mapping.exclude)) continue
+      if (isSensitivePath(sourceRelative)) {
+        throw new Error(`业务映射命中敏感文件，拒绝纳入候选：${sourceRelative}`)
+      }
+      const destinationRelative = mapping.kind === 'file'
+        ? destination
+        : `${destination}/${mappingRelative}`
+      assertSafeRelativePath(destinationRelative, '业务映射目标')
+      if (isExcluded(destinationRelative, manifest.protected)) {
+        throw new Error(`业务映射覆盖了执行器保护路径：${destinationRelative}`)
+      }
+      if (!entrySet.has(sourceRelative)) throw new Error(`业务映射源文件不存在：${sourceRelative}`)
+      if (destinations.has(destinationRelative)) {
+        throw new Error(`业务映射目标冲突：${destinationRelative}`)
+      }
+      destinations.set(destinationRelative, sourceRelative)
+      selected.push({ sourceRelative, destinationRelative })
+      selectedFromSource += 1
+    }
+    if (!selectedFromSource) throw new Error(`业务映射没有纳入任何文件：${source}`)
+  }
+  if (!selected.length) throw new Error('业务映射没有纳入任何文件')
+  return selected
+}
+
+// copyBaseRepository 把基座 Git 树复制到候选，不把全过程完整应用替换为 /flow 基座。
+function copyBaseRepository (repositoryRoot, candidateRoot) {
+  for (const entry of listTrackedEntries(repositoryRoot)) {
+    const parts = entry.relative.split('/')
+    if (parts[0] === 'dist' || parts.includes('node_modules') ||
+        parts.includes('.npmrc') || parts.includes('.claude') || parts.includes('.omc') ||
+        parts.includes('.DS_Store') || parts.includes('__MACOSX') || isSensitivePath(entry.relative)) continue
+    copyFileFromRepository(repositoryRoot, entry.relative, candidateRoot, entry.relative)
+  }
+}
+
+// applyBusinessMappings 以全过程 test 为业务主体，只保留清单保护的执行器适配路径。
+function applyBusinessMappings (businessRoot, candidateRoot, manifest, selected) {
+  const preservedFiles = new Set()
+  const preservedDirectories = new Set()
+  for (const pattern of manifest.protected) {
+    const normalized = pattern.replaceAll('\\', '/').replace(/\/+$/, '')
+    if (normalized.endsWith('/**')) preservedDirectories.add(normalized.slice(0, -3))
+    else preservedFiles.add(normalized)
+  }
+  for (const mappingRoot of ['src', 'public']) {
+    for (const relative of candidateFilesUnder(candidateRoot, mappingRoot)) {
+      const destinationRelative = `${mappingRoot}/${relative}`
+    const isPreserved = preservedFiles.has(destinationRelative) ||
+      [...preservedDirectories].some(directory =>
+        destinationRelative === directory || destinationRelative.startsWith(`${directory}/`))
+      if (!isPreserved) fs.rmSync(path.join(candidateRoot, destinationRelative), { force: true })
+    }
+  }
+  for (const item of selected) {
+    if (isExcluded(item.destinationRelative, manifest.protected)) continue
+    copyFileFromRepository(businessRoot, item.sourceRelative, candidateRoot, item.destinationRelative)
+  }
+}
+
+// removeEmptyDirectories 清掉来源映射删除后留下的空目录，不影响候选之外的文件。
+function removeEmptyDirectories (root) {
+  const visit = directory => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory() && !entry.isSymbolicLink()) visit(path.join(directory, entry.name))
+    }
+    if (directory !== root && fs.readdirSync(directory).length === 0) fs.rmdirSync(directory)
+  }
+  if (fs.existsSync(root)) visit(root)
+}
+
+// stageFormMaking 只从受控 runtime-source 补齐 FormMaking 产物，不修改库源码或自行编译。
+function stageFormMaking (candidateRoot) {
+  const source = path.join(formMakingRoot, 'src', 'lib', 'vue-form-making', 'dist')
+  const destination = path.join(candidateRoot, 'src', 'lib', 'vue-form-making', 'dist')
+  const entry = path.join(source, 'FormMaking.common.js')
+  if (!fs.existsSync(entry)) throw new Error(`缺少受控 FormMaking 产物：${entry}`)
+  fs.rmSync(destination, { recursive: true, force: true })
+  fs.mkdirSync(path.dirname(destination), { recursive: true })
+  fs.cpSync(source, destination, { recursive: true })
+  const artifactSkipNames = new Set(['.git', 'node_modules', '.npmrc', '.claude', '.omc', '.DS_Store', '__MACOSX'])
+  if (digestDirectory(source, { skipNames: artifactSkipNames }) !== digestDirectory(destination, { skipNames: artifactSkipNames })) {
+    throw new Error('FormMaking 产物复制后与受控副本不一致')
+  }
+}
+
+// mappingHash 固定映射版本、排除项和保护边界，避免仅凭业务 SHA 掩盖清单变更。
+function mappingHash (manifest) {
+  return crypto.createHash('sha256').update(canonicalJson({
+    mappingVersion: manifest.mappingVersion,
+    mappings: manifest.mappings,
+    protected: manifest.protected
+  })).digest('hex')
+}
+
+// readCurrentMetadata 读取已有合成候选的版本事实，损坏时由调用方阻止继续发布。
+function readCurrentMetadata () {
+  if (!fs.existsSync(metadataPath)) return null
+  return readJson(metadataPath, '执行器合成源码元数据')
+}
+
+// verifyPreparedSource 验证候选字节、映射摘要和 FormMaking 产物，供发布与构建共同使用。
+export function verifyPreparedSource () {
+  const manifest = readManifest()
+  const metadata = readCurrentMetadata()
+  if (!metadata || metadata.schemaVersion !== 2 || metadata.repository !== 'composed-flow-source') {
+    throw new Error('缺少 F-053 合成源码元数据')
+  }
+  if (!fs.existsSync(targetRoot)) throw new Error('缺少 executor-service/flow-source 合成候选')
+  const actualDigest = digestDirectory(targetRoot)
+  if (actualDigest !== metadata.candidateDigest) {
+    throw new Error(`合成候选摘要不一致：元数据 ${metadata.candidateDigest}，实际 ${actualDigest}`)
+  }
+  const expectedMappingHash = mappingHash(manifest)
+  if (expectedMappingHash !== metadata.mappingHash) {
+    throw new Error(`业务映射摘要不一致：元数据 ${metadata.mappingHash}，清单 ${expectedMappingHash}`)
+  }
+  if (!/^[0-9a-f]{40}$/.test(String(metadata.businessHead))) {
+    throw new Error(`合成候选全过程提交号非法：${metadata.businessHead}`)
+  }
+  if (metadata.baseHead !== manifest.base.head || metadata.baseBranch !== manifest.base.branch ||
+      metadata.baseRepository !== manifest.base.repository || metadata.baseRemote !== manifest.base.remote ||
+      metadata.businessBranch !== manifest.business.branch ||
+      metadata.businessRepository !== manifest.business.repository || metadata.businessRemote !== manifest.business.remote) {
+    throw new Error('合成候选来源与当前来源清单不一致')
+  }
+  const formMaking = path.join(targetRoot, 'src', 'lib', 'vue-form-making', 'dist', 'FormMaking.common.js')
+  if (!fs.existsSync(formMaking)) throw new Error('合成候选缺少 FormMaking.common.js')
+  return { manifest, metadata, candidateDigest: actualDigest }
+}
+
+// writeMetadata 落盘基座、全过程、映射和候选摘要，供打包、构建与健康检查逐级对账。
+function writeMetadata (manifest, base, business, candidateDigest, businessDigestValue, selectedCount) {
+  const data = {
+    schemaVersion: 2,
+    repository: 'composed-flow-source',
+    mappingVersion: manifest.mappingVersion,
+    mappingHash: mappingHash(manifest),
+    candidateDigest,
+    baseRepository: base.repository,
+    baseRemote: base.remote,
+    baseBranch: base.branch,
+    baseHead: base.head,
+    baseDigest: base.digest,
+    businessRepository: business.repository,
+    businessRemote: business.remote,
+    businessBranch: business.branch,
+    businessHead: business.head,
+    businessDigest: businessDigestValue,
+    businessFileCount: selectedCount,
+    preparedAt: new Date().toISOString()
+  }
+  fs.writeFileSync(metadataPath, `${JSON.stringify(data, null, 2)}\n`)
+  return data
+}
+
+// prepareSource 从远端冻结全过程 test HEAD，合成并原子替换候选；任何失败都保留旧候选不动。
+export function prepareSource () {
+  const manifest = readManifest()
+  const base = { ...manifest.base }
+  const business = resolveBranchHead(manifest.business, false)
+  const mapHash = mappingHash(manifest)
+  const current = readCurrentMetadata()
+  if (current?.schemaVersion === 2 && current.baseHead === base.head &&
+      current.businessHead === business.head && current.mappingHash === mapHash) {
+    const verified = verifyPreparedSource()
+    process.stdout.write(`[GIT] 合成候选已冻结：基座 ${base.head}，全过程 ${business.head}\n`)
+    return verified.metadata
+  }
+
+  let baseRepo = null
+  let businessRepo = null
+  let candidateName = null
+  let candidateRoot = null
+  try {
+    baseRepo = cloneAt(base, 'flow-source-base')
+    businessRepo = cloneAt(business, 'flow-source-business')
+    candidateName = `${generatedTargetName}.sync-${process.pid}`
+    candidateRoot = path.join(serviceRoot, candidateName)
+    assertGeneratedPath(candidateRoot, candidateName)
+    removeGeneratedPath(candidateRoot, candidateName)
+    fs.mkdirSync(candidateRoot, { recursive: true })
+    copyBaseRepository(baseRepo, candidateRoot)
+    const baseDigest = digestDirectory(candidateRoot)
+    const selected = collectMappingFiles(businessRepo, manifest)
+    applyBusinessMappings(businessRepo, candidateRoot, manifest, selected)
+    removeEmptyDirectories(path.join(candidateRoot, 'src'))
+    removeEmptyDirectories(path.join(candidateRoot, 'public'))
+    stageFormMaking(candidateRoot)
+    const businessDigestValue = digestFiles(businessRepo, selected.map(item => item.sourceRelative))
+    const candidateDigest = digestDirectory(candidateRoot)
+    const metadata = {
+      schemaVersion: 2,
+      repository: 'composed-flow-source',
+      mappingVersion: manifest.mappingVersion,
+      mappingHash: mapHash,
+      candidateDigest,
+      baseRepository: base.repository,
+      baseRemote: base.remote,
+      baseBranch: base.branch,
+      baseHead: base.head,
+      baseDigest,
+      businessRepository: business.repository,
+      businessRemote: business.remote,
+      businessBranch: business.branch,
+      businessHead: business.head,
+      businessDigest: businessDigestValue,
+      businessFileCount: selected.length,
+      preparedAt: new Date().toISOString()
+    }
+
+    const backupName = `${generatedTargetName}.old-${process.pid}`
+    const backupRoot = path.join(serviceRoot, backupName)
+    assertGeneratedPath(backupRoot, backupName)
+    removeGeneratedPath(backupRoot, backupName)
+    if (fs.existsSync(targetRoot)) {
+      assertGeneratedPath(targetRoot, generatedTargetName)
+      fs.renameSync(targetRoot, backupRoot)
+    }
+    try {
+      fs.renameSync(candidateRoot, targetRoot)
+      if (fs.existsSync(backupRoot)) removeGeneratedPath(backupRoot, backupName)
+    } catch (error) {
+      if (!fs.existsSync(targetRoot) && fs.existsSync(backupRoot)) fs.renameSync(backupRoot, targetRoot)
+      throw error
+    }
+    writeMetadata(manifest, { ...base, digest: baseDigest }, business, candidateDigest, businessDigestValue, selected.length)
+    process.stdout.write(`[GIT] 合成完成：基座 ${base.head} + 全过程 test ${business.head}，纳入 ${metadata.businessFileCount} 个业务文件\n`)
+    return metadata
+  } finally {
+    if (baseRepo && fs.existsSync(baseRepo)) removeGeneratedPath(baseRepo, `flow-source-base-${process.pid}`)
+    if (businessRepo && fs.existsSync(businessRepo)) removeGeneratedPath(businessRepo, `flow-source-business-${process.pid}`)
+    if (candidateRoot && candidateName && fs.existsSync(candidateRoot)) removeGeneratedPath(candidateRoot, candidateName)
+  }
 }
 
 function main () {
-  const manifest = readManifest()
-  assertNotConfigRuntime()
-
-  // 自动检测并拉取远端最新代码：
-  // 当开启 EXECUTOR_PULL_LATEST=1 或传入 --pull-latest 时，自动探测远端对应分支最新 HEAD；
-  // 若探测成功则跟进最新 HEAD，若网络不可达则安全回落到清单锁定的版本。
-  const pullLatest = process.env.EXECUTOR_PULL_LATEST === '1' || process.argv.includes('--pull-latest')
-  let head = manifest.head
-  let targetRemote = manifest.remote
-
-  if (pullLatest) {
-    const remoteInfo = fetchRemoteLatestHEAD(manifest)
-    if (remoteInfo) {
-      if (remoteInfo.head !== head) {
-        process.stdout.write(`[GIT] 远端 ${manifest.branch} 分支发现新提交：${head.slice(0, 7)} -> ${remoteInfo.head.slice(0, 7)}\n`)
-      }
-      head = remoteInfo.head
-      targetRemote = remoteInfo.remote
-    } else {
-      process.stdout.write(`[GIT] 远端分支不可达，安全回退至清单锁定版本 ${head.slice(0, 7)}\n`)
-    }
-  }
-
-  if (!/^[0-9a-f]{40}$/.test(String(head))) fail(`清单 head 必须是完整提交号：${head}`)
-  if (!manifest.remote || !manifest.branch) fail('清单必须给出 remote 与 branch')
-
-  if (isCheckedOutAt({ ...manifest, remote: targetRemote }, head)) {
-    const digest = digestDirectory(targetRoot)
-    writeMetadata(manifest, head, digest, 'unchanged')
-    process.stdout.write(`[GIT] flow-source 已是最新 ${head.slice(0, 7)}（未变更）\n`)
-    return
-  }
-
-  // cloneAt 内部的 fetch 就是远端可达性判据：目标提交可能已被分支前移甩开，
-  // 这里不能用 ls-remote 按 SHA 探测（服务端只按 ref 过滤，已前移的提交会查不到，
-  // 但按 SHA 直接 fetch 依然成立）。失败时给出明确原因，绝不静默留下半同步目录。
   try {
-    cloneAt(manifest, head, targetRemote)
+    if (process.argv.includes('--verify-prepared')) {
+      verifyPreparedSource()
+      process.stdout.write('[OK] F-053 合成源码摘要校验通过\n')
+      return
+    }
+    prepareSource()
   } catch (error) {
-    // 如果使用 targetRemote 失败，尝试候选降级
-    let cloned = false
-    const candidates = resolveRemoteCandidates(manifest.remote)
-    for (const altRemote of candidates) {
-      if (altRemote === targetRemote) continue
-      try {
-        cloneAt(manifest, head, altRemote)
-        cloned = true
-        break
-      } catch {
-        // 继续
-      }
-    }
-    if (!cloned) {
-      fail(`从 ${manifest.remote} 同步提交 ${head} 失败：${String(error?.message ?? error)}`)
-    }
+    fail(String(error?.message ?? error))
   }
-  const actual = git(targetRoot, ['rev-parse', 'HEAD'])
-  if (actual !== head) fail(`检出提交不符：期望 ${head}，实际 ${actual}`)
-
-  // FormMaking 产物不在 rsh-flow-components 的 Git 里（该仓库只跟踪
-  // src/lib/vue-form-making/package.json，dist 是构建产物且被上游忽略），
-  // 因此不能指望 clone 带出它，必须从受控副本补齐并逐字节校验。
-  stageFormMaking()
-  if (!fs.existsSync(path.join(targetRoot, 'src', 'api', 'index.js'))) {
-    fail('同步后缺少 src/api/index.js（端点真名清单来源）')
-  }
-
-  const digest = digestDirectory(targetRoot)
-  writeMetadata(manifest, head, digest, 'synced')
-  process.stdout.write(`[GIT] ${manifest.remote}@${head.slice(0, 7)} -> flow-source/\n`)
 }
 
-// writeMetadata 落盘同步事实：远端、分支、HEAD、内容摘要与同步方式。
-// digest 供 build-form-making 与测试核对「本地快照未被手改」。
-function writeMetadata (manifest, head, digest, action) {
-  const metadata = {
-    repository: manifest.repository,
-    remote: manifest.remote,
-    branch: manifest.branch,
-    head,
-    subject: git(targetRoot, ['log', '-1', '--format=%s', head]),
-    digest,
-    action,
-    syncedAt: new Date().toISOString()
-  }
-  fs.writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`)
-  fs.writeFileSync(lockPath, `${JSON.stringify({ head, digest }, null, 2)}\n`)
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+  main()
 }
-
-main()

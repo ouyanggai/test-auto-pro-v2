@@ -21,6 +21,8 @@ import uuid
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 NOISE = {'.npmrc', '.claude', '.omc'}
 APP_DIRS = {'cmd', 'internal', 'web', 'form-runtime', 'executor-service', 'deploy'}
+SOURCE_SCRIPT = ROOT / 'executor-service/scripts/sync-flow-source.js'
+SENSITIVE_SUFFIXES = {'.key', '.pem', '.log', '.crt', '.cer', '.p12', '.pfx', '.jks', '.der'}
 
 
 def configure_output():
@@ -63,7 +65,7 @@ def allowed(relative):
         return False
     if any(part in {'.git', 'node_modules', '.runtime', 'logs'} for part in path.parts):
         return False
-    if path.name.startswith('.env') or path.name == '.npmrc' or path.suffix in {'.key', '.pem', '.log'}:
+    if path.name.startswith('.env') or path.name == '.npmrc' or path.suffix.lower() in SENSITIVE_SUFFIXES:
         return False
     if relative.startswith(('web/dist/', 'executor-service/flow-source/', 'executor-service/page/dist/', 'executor-service/dist/')):
         return False
@@ -79,22 +81,42 @@ def clean_upstream(relative):
     return not any(part in NOISE or part.startswith('.env') for part in path.parts) and path.suffix not in {'.key', '.pem'}
 
 
+def allowed_candidate(relative):
+    """合成候选只打包源码和受控表单产物，排除构建缓存与本机噪声。"""
+    path = pathlib.PurePosixPath(relative)
+    if path.is_absolute() or '..' in path.parts:
+        return False
+    if any(part in {'.git', 'node_modules', 'logs'} for part in path.parts):
+        return False
+    if path.parts and path.parts[0] == 'dist':
+        return False
+    if path.name in {'.native-page-build.json', '.npmrc'} or path.name.startswith('.env'):
+        return False
+    if path.suffix.lower() in SENSITIVE_SUFFIXES:
+        return False
+    return True
+
+
 def prepare_source(root):
-    """缺少清单快照时调用现有同步入口，真实脏改动必须先拒绝而不能被同步覆盖。"""
-    manifest = json.loads((root / 'executor-service/flow-source-manifest.json').read_text(encoding='utf-8'))
-    source = root / 'executor-service/flow-source'
-    if (source / '.git').exists():
-        for line in git(source, 'status', '--porcelain', '--untracked-files=no').decode().splitlines():
-            if not (line.startswith(' D ') and line[3:].split('/')[0] in NOISE):
-                raise RuntimeError('执行源码有未批准修改，拒绝同步或发布脏工作树')
-        if (git(source, 'rev-parse', 'HEAD').decode().strip() == manifest['head'] and
-                git(source, 'remote', 'get-url', 'origin').decode().strip() == manifest['remote']):
-            return
-    elif source.exists():
-        raise RuntimeError('执行源码目录不是受控 Git 检出，拒绝覆盖')
-    print('同步清单锁定的执行源码快照……', flush=True)
-    environment = dict(os.environ, EXECUTOR_PULL_LATEST='0')
-    subprocess.check_call(['node', str(root / 'executor-service/scripts/sync-flow-source.js')], env=environment)
+    """从远端冻结全过程 test，并生成基座与业务合成候选；不可达时不沿用旧业务快照。"""
+    print('读取全过程 test 并准备合成执行源码……', flush=True)
+    environment = dict(
+        os.environ,
+        EXECUTOR_SOURCE_ROOT=str(root / 'executor-service'),
+        EXECUTOR_WORKSPACE_ROOT=str(root),
+    )
+    subprocess.check_call(['node', str(SOURCE_SCRIPT), '--prepare'], env=environment)
+
+
+def verify_prepared_source(root):
+    """再次核对合成候选摘要，保证打包只消费本次准备过且未被改动的源码。"""
+    environment = dict(
+        os.environ,
+        EXECUTOR_SOURCE_ROOT=str(root / 'executor-service'),
+        EXECUTOR_WORKSPACE_ROOT=str(root),
+    )
+    subprocess.check_call(['node', str(SOURCE_SCRIPT), '--verify-prepared'], env=environment)
+    return json.loads((root / 'executor-service/flow-source.json').read_text(encoding='utf-8'))
 
 
 def add_bytes(output, relative, data, mode=0o644):
@@ -108,38 +130,54 @@ def add_bytes(output, relative, data, mode=0o644):
 
 
 def package(root, destination):
-    """从跟踪文件与清单 Git 对象构建包，绝不复制执行源码的脏工作树。"""
-    manifest = json.loads((root / 'executor-service/flow-source-manifest.json').read_text(encoding='utf-8'))
+    """从已经校验的合成候选构建包，不再从旧基座 SHA 重新取 Git 对象。"""
+    metadata = verify_prepared_source(root)
     source = root / 'executor-service/flow-source'
-    if git(source, 'rev-parse', 'HEAD').decode().strip() != manifest['head']:
-        raise RuntimeError('执行源码不在清单版本，请先运行 pnpm --dir executor-service sync-source')
-    if git(source, 'remote', 'get-url', 'origin').decode().strip() != manifest['remote']:
-        raise RuntimeError('执行源码来源与清单不一致')
-    for line in git(source, 'status', '--porcelain', '--untracked-files=no').decode().splitlines():
-        if not (line.startswith(' D ') and line[3:].split('/')[0] in NOISE):
-            raise RuntimeError('执行源码有未批准修改，拒绝发布脏工作树')
+    if not source.is_dir():
+        raise RuntimeError('缺少合成执行源码目录')
     paths = set(git(root, 'ls-files', '-z').decode('utf-8').split('\0'))
     # 首次编写入口时也可验证完整发布；后续这些入口均已纳入 Git。
     paths.update({'deploy/update.py', 'deploy/update.cmd', 'deploy/update-server.sh'})
-    upstream = git(source, 'archive', manifest['head'])
+    paths.add('executor-service/flow-source.json')
     lib_prefix = 'form-runtime/runtime-source/src/lib/vue-form-making/dist/'
     if not (root / (lib_prefix + 'FormMaking.common.js')).is_file():
         raise RuntimeError('缺少受控 FormMaking 产物，拒绝发布')
+    candidate_paths = []
+    for file_path in source.rglob('*'):
+        if file_path.is_symlink():
+            raise RuntimeError('发布文件不能是符号链接：executor-service/flow-source/' + file_path.relative_to(source).as_posix())
+        if file_path.is_file():
+            relative = file_path.relative_to(source).as_posix()
+            if allowed_candidate(relative):
+                candidate_paths.append((relative, file_path))
     with tarfile.open(destination, 'w:gz') as output:
         for relative in sorted(paths):
             if relative and allowed(relative) and (root / relative).is_file():
                 if (root / relative).is_symlink():
                     raise RuntimeError('发布文件不能是符号链接：' + relative)
                 add_bytes(output, relative, (root / relative).read_bytes())
-        with tarfile.open(fileobj=io.BytesIO(upstream)) as archive:
-            for item in archive:
-                if item.isfile() and clean_upstream(item.name):
-                    add_bytes(output, 'executor-service/flow-source/' + item.name, archive.extractfile(item).read(), item.mode)
-        for relative in sorted(paths):
-            if relative.startswith(lib_prefix) and (root / relative).is_file():
-                add_bytes(output, 'executor-service/flow-source/src/lib/vue-form-making/dist/' + relative[len(lib_prefix):], (root / relative).read_bytes())
+        for relative, file_path in sorted(candidate_paths):
+            add_bytes(output, 'executor-service/flow-source/' + relative,
+                      file_path.read_bytes(), file_path.stat().st_mode & 0o777)
         revision = git(root, 'rev-parse', 'HEAD').decode().strip()
-        data = {'revision': revision, 'flowSource': manifest['head'], 'trackedWorktree': True}
+        data = {
+            'revision': revision,
+            'sourceSchemaVersion': metadata['schemaVersion'],
+            'baseRepository': metadata['baseRepository'],
+            'baseRemote': metadata['baseRemote'],
+            'baseBranch': metadata['baseBranch'],
+            'baseHead': metadata['baseHead'],
+            'baseDigest': metadata['baseDigest'],
+            'businessRepository': metadata['businessRepository'],
+            'businessRemote': metadata['businessRemote'],
+            'businessBranch': metadata['businessBranch'],
+            'businessHead': metadata['businessHead'],
+            'mappingVersion': metadata['mappingVersion'],
+            'mappingHash': metadata['mappingHash'],
+            'candidateDigest': metadata['candidateDigest'],
+            'businessDigest': metadata['businessDigest'],
+            'trackedWorktree': True
+        }
         add_bytes(output, 'deploy/release-source.json', json.dumps(data, ensure_ascii=False).encode('utf-8'))
     return hashlib.sha256(destination.read_bytes()).hexdigest()
 
@@ -204,6 +242,7 @@ def main():
     parser.add_argument('--package-only', type=pathlib.Path, help='仅生成发布包，不连接服务器')
     args = parser.parse_args()
     if args.package_only:
+        prepare_source(ROOT)
         print('发布包 SHA256：' + package(ROOT, args.package_only))
         return
     import paramiko

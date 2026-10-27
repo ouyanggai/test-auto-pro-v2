@@ -705,35 +705,21 @@ async function ensureLatestFlowSource (): Promise<void> {
   const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const syncScript = path.join(serviceRoot, 'scripts', 'sync-flow-source.js')
   const buildScript = path.join(serviceRoot, 'scripts', 'build-native-page.js')
-  // 1. 远端同步是尽力而为:内网 git 抖动/不可达时只告警,绝不因此跳过本地页面构建;
-  //    EXECUTOR_DISABLE_AUTO_SYNC=1 只关掉这一步远端拉取,不影响下面的本地构建兜底。
-  //    超时给到 180s:一次全量 checkout+FormMaking 补齐+全树摘要实测约 60s,旧的 60s 上限过紧、
-  //    正常同步也会被判 ETIMEDOUT(叠加破坏性 cloneAt 就会清空 flow-source),故留足余量。
+  // 启动只校验已经准备的候选；发布包必须固定在准备时的全过程 SHA，不能在服务启动时漂移。
   if (process.env.EXECUTOR_DISABLE_AUTO_SYNC !== '1') {
-    try {
-      childProcess.execFileSync(process.execPath, [syncScript, '--pull-latest'], {
-        cwd: serviceRoot,
-        encoding: 'utf8',
-        timeout: 180000,
-        stdio: 'inherit'
-      })
-    } catch (error) {
-      console.warn('[executor] 启动时自动同步 rsh-flow-components 告警(已回落到本地版本):', (error as Error)?.message ?? error)
-    }
-  }
-  // 2. 本地页面构建独立于同步结果:无论同步成功、失败还是被禁用,都必须让 dist 对应当前源码。
-  //    build-native-page 自身按输入摘要判定是否重建,dist 已最新时是快速空操作;
-  //    这里单独兜底,根治「同步失败->构建被整段跳过->缺 dist->启动失败」的连锁。
-  try {
-    childProcess.execFileSync(process.execPath, [buildScript], {
+    childProcess.execFileSync(process.execPath, [syncScript, '--verify-prepared'], {
       cwd: serviceRoot,
       encoding: 'utf8',
-      timeout: 300000,
+      timeout: 120000,
       stdio: 'inherit'
     })
-  } catch (error) {
-    console.warn('[executor] 原生 /flow 页面构建告警(沿用现有 dist,缺失则启动仍会失败):', (error as Error)?.message ?? error)
   }
+  childProcess.execFileSync(process.execPath, [buildScript], {
+    cwd: serviceRoot,
+    encoding: 'utf8',
+    timeout: 300000,
+    stdio: 'inherit'
+  })
 }
 
 async function main (): Promise<void> {
@@ -778,7 +764,7 @@ async function main (): Promise<void> {
     }
 
     if (request.method === 'GET' && (url.pathname === '/health' || url.pathname === '/runtime/health')) {
-      send(200, healthBody())
+      send(200, healthBody(readBaselineSource(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'))))
       return
     }
 

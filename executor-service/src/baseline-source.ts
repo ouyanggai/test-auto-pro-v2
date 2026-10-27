@@ -49,9 +49,31 @@ export function readBaselineSource (serviceRoot: string): Record<string, unknown
     capturedAt: new Date().toISOString(),
     deployedVersion: UNKNOWN,
     formMakingSourceHead: UNKNOWN,
-    flowSourceManifest: readMetadata(serviceRoot, 'flow-source-manifest.json', ['head', 'branch']),
-    flowSource: readMetadata(serviceRoot, 'flow-source.json', ['head', 'branch', 'digest', 'syncedAt']),
-    nativePageBuild: readMetadata(serviceRoot, path.join('flow-source', '.native-page-build.json'), ['inputDigest', 'builtAt']),
+    flowSourceManifest: readMetadata(serviceRoot, 'flow-source-manifest.json', ['mappingVersion']),
+    flowSource: readMetadata(serviceRoot, 'flow-source.json', [
+      'mappingVersion',
+      'mappingHash',
+      'candidateDigest',
+      'baseRepository',
+      'baseRemote',
+      'baseBranch',
+      'baseHead',
+      'baseDigest',
+      'businessRepository',
+      'businessRemote',
+      'businessBranch',
+      'businessHead',
+      'businessDigest',
+      'preparedAt'
+    ]),
+    nativePageBuild: readMetadata(serviceRoot, path.join('flow-source', '.native-page-build.json'), [
+      'inputDigest',
+      'candidateDigest',
+      'baseHead',
+      'businessHead',
+      'mappingHash',
+      'builtAt'
+    ]),
     formMakingArtifact: readFormMakingArtifact(serviceRoot)
   }
 }

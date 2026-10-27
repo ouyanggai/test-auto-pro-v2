@@ -12,7 +12,9 @@ python -u deploy/update.py
 
 当前电脑的连接配置已写入被 Git 忽略的 `deploy/.env.update.json`，自动读取服务器密码，无需再次输入。该文件仅保存在本机，不打包、不上传、不提交。其他电脑需要自行准备同名 JSON，字段为 `host`、`user`、`password`、`directory`、`proxy_port`；当前部署目录固定为 `/opt/test-auto-pro-v2`，代理端口默认 `7897`，设为 `0` 可关闭代理。需要 Python 3、Git、Paramiko（缺少时执行 `python -m pip install paramiko`）；执行源码清单更新时自动调用现有 Node 同步脚本，因此也需要 Node 和本机 Git 访问权限。
 
-脚本发布当前 **Git 跟踪文件的已保存内容**，包括尚未提交的改动；新增源码先 `git add`，无须先 push。执行源码按清单固定提交从 Git 对象打包，并拒绝真实脏改动；缺少或过期快照会自动安全同步。凭证、参考仓库、依赖缓存、日志和本机构建产物不会进入包。
+脚本发布当前 **Git 跟踪文件的已保存内容**，包括尚未提交的改动；新增源码先 `git add`，无须先 push。每次发布都会先读取全过程仓库远端 `test` 分支当时的最新提交，再把该业务代码和执行器适配层组装为同一份 `/flow` 页面源码；`--package-only` 也执行相同的远端读取和源码准备。发布包、构建缓存与版本记录使用此次冻结的完整提交号。远端不可达、同步或校验失败时立即停止，不会上传旧包或继续切换服务。
+
+本机全过程仓库目录只用于确认规范远端；发布从远端 Git 对象读取，不复制本机工作树。因此该目录保持 `oygdev2` 或存在未提交修改都不会影响发布，也不需要切换分支。`executor-service/flow-source` 是本机生成的候选目录，不提交；包内只包含已校验源码，不含 Git 元数据、凭证、依赖缓存、日志或页面构建产物。受控 FormMaking 产物仍从 `form-runtime/runtime-source` 获取，不修改其库源码。
 
 上传后先在独立目录构建四个应用镜像，成功后才替换部署源码并启动六服务；数据库卷、`deploy/.env`、日志和当前配置表单维护卷保留。源码目录整体替换，不遗留已删除的旧源码。配置表单的当前维护版本继续由现有维护流水线管理，不在发布时覆盖持久化 live 卷。构建失败不切换容器；切换后的健康或验活失败会返回非零退出码并保留现场，不自动回退数据库迁移。发布锁拒绝并发更新。
 
@@ -25,14 +27,17 @@ python -u deploy/update.py
 在源码根目录执行：
 
 ```bash
-# 执行服务按清单同步自己的源码；需要配置内网 Git 的访问权限。
-pnpm --dir executor-service sync-source
+# 直接 Compose 构建前必须先同步全过程 test 并准备执行器候选。
+node executor-service/scripts/sync-flow-source.js
+pnpm --dir executor-service build-native-page
 cp deploy/.env.example deploy/.env
 # 在 deploy/.env 中填写目标平台配置和工具库密码。
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
 bash test/integration/f023_deployment_smoke.sh
 ```
+
+生产一键发布会自动完成源码准备；直接 Compose 构建则必须先执行上面的同步与页面构建命令。同步每次重新读取全过程远端 `test`，远端不可读时失败，不回落到上一次业务源码。页面构建会校验候选摘要，源码未变化时才复用页面产物。
 
 `deploy/.env` 必须限制为部署账号可读（`chmod 600 deploy/.env`），不进入 Git、镜像或构建参数。后端从容器环境读取目标配置；浏览器执行服务通过 Go 转发目标请求。执行服务只在容器内网监听，发布时固定源码版本，启动时关闭远端自动同步。
 

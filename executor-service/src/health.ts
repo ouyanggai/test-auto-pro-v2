@@ -6,15 +6,18 @@ export interface HealthBody {
   ok: true
   service: string
   protocol: 'exec-engine/v2'
+  source?: Record<string, unknown>
 }
 
-// healthBody 是 GET /health 与 GET /runtime/health 的固定成功载荷。
-export function healthBody (): HealthBody {
-  return {
+// healthBody 是 GET /health 与 GET /runtime/health 的成功载荷，并可附带已准备源码版本事实。
+export function healthBody (source?: Record<string, unknown>): HealthBody {
+  const body: HealthBody = {
     ok: true,
     service: SERVICE_NAME,
     protocol: 'exec-engine/v2'
   }
+  if (source) body.source = source
+  return body
 }
 
 // listenPort 读取 EXECUTOR_PORT，缺省 19011。

@@ -1,6 +1,77 @@
 {
-  "repository": "rsh-flow-components",
-  "remote": "git@192.168.1.155:rsh-cloud/portal/rsh-flow-components.git",
-  "branch": "test",
-  "head": "e141a799408192bac1fe1f3dc7d821a2cee64986"
+  "schemaVersion": 2,
+  "mappingVersion": "f053-group-approve-v2",
+  "base": {
+    "repository": "rsh-flow-components",
+    "remote": "git@192.168.1.155:rsh-cloud/portal/rsh-flow-components.git",
+    "branch": "test",
+    "head": "e141a799408192bac1fe1f3dc7d821a2cee64986"
+  },
+  "business": {
+    "repository": "rsh-cloud-invest-power-system",
+    "remote": "http://120.237.81.30:2020/rsh-cloud/cloud-web/business-system/rsh-cloud-invest-power-system",
+    "branch": "test"
+  },
+  "mappings": [
+    {
+      "source": "src",
+      "destination": "src",
+      "kind": "directory",
+      "exclude": [
+        "App.vue",
+        "main.js",
+        "router/**",
+        "views/FlowDetail.vue",
+        "views/FlowInitiate.vue",
+        "adapters/**",
+        "config/**",
+        "components/InitFlowDialog/**",
+        "components/fmComponents/**",
+        "lib/vue-form-making/**",
+        "utils/auth.js",
+        "utils/axios.js",
+        "utils/runtimeAuthSync.js",
+        "utils/runtimePlatformCode.js",
+        "utils/flowDetailRow.js",
+        "utils/secret.js",
+        "assets/js/cesium_token.js"
+      ]
+    },
+    {
+      "source": "public",
+      "destination": "public",
+      "kind": "directory",
+      "exclude": [
+        "index.html"
+      ]
+    },
+    {
+      "source": "package.json",
+      "destination": "package.json",
+      "kind": "file"
+    },
+    {
+      "source": "package-lock.json",
+      "destination": "package-lock.json",
+      "kind": "file"
+    }
+  ],
+  "protected": [
+    "src/App.vue",
+    "src/main.js",
+    "src/router/**",
+    "src/views/FlowDetail.vue",
+    "src/views/FlowInitiate.vue",
+    "src/adapters/**",
+    "src/config/**",
+    "src/components/InitFlowDialog/**",
+    "src/components/fmComponents/**",
+    "src/utils/auth.js",
+    "src/utils/axios.js",
+    "src/utils/runtimeAuthSync.js",
+    "src/utils/runtimePlatformCode.js",
+    "src/utils/flowDetailRow.js",
+    "src/utils/secret.js",
+    "public/index.html"
+  ]
 }

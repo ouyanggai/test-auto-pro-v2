@@ -21,8 +21,6 @@ web/dist/
 **/.git/
 executor-service/dist/
 executor-service/page/dist/
-executor-service/flow-source.json
-executor-service/flow-source.lock.json
 executor-service/flow-source/dist/
 executor-service/flow-source/.env*
 executor-service/flow-source/.npmrc

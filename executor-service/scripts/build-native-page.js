@@ -13,6 +13,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { verifyPreparedSource } from './sync-flow-source.js'
 
 const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const flowSource = path.join(serviceRoot, 'flow-source')
@@ -36,7 +37,7 @@ function digestInputs () {
     const stat = fs.statSync(absolute)
     if (stat.isDirectory()) {
       for (const entry of fs.readdirSync(absolute, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-        if (entry.name === 'node_modules' || entry.name === 'dist') continue
+        if (entry.name === 'node_modules' || (relative === '' && entry.name === 'dist')) continue
         visit(path.join(absolute, entry.name), `${relative}/${entry.name}`)
       }
       return
@@ -57,12 +58,13 @@ function digestInputs () {
 }
 
 // isPageFresh 判断现有 dist 是否已经对应当前源码。
-function isPageFresh (digest) {
+function isPageFresh (digest, candidateDigest) {
   if (!fs.existsSync(path.join(distDir, 'index.html'))) return false
   if (process.env.EXECUTOR_FORCE_PAGE_BUILD === '1') return false
   if (!fs.existsSync(stampPath)) return false
   try {
-    return JSON.parse(fs.readFileSync(stampPath, 'utf8')).inputDigest === digest
+    const stamp = JSON.parse(fs.readFileSync(stampPath, 'utf8'))
+    return stamp.inputDigest === digest && stamp.candidateDigest === candidateDigest
   } catch {
     return false
   }
@@ -107,31 +109,33 @@ function runBuild () {
   }
 }
 
-// ensureBabelConfig 兜底恢复 flow-source/babel.config.js。
-// 该文件被 Git 忽略、只随远端克隆落地;内网 git 不可达导致的克隆超时会把它连同 dist 一并清空,
-// 缺失时 vue-cli-service build 直接失败。内容与参考仓库 rsh-flow-components 一致(vue-cli 标准预设),
-// 只在缺失时写入、已存在则原样保留,避免与克隆结果产生第二处口径。
-function ensureBabelConfig () {
-  if (fs.existsSync(babelConfigPath)) return
-  process.stdout.write('[BUILD] 恢复缺失的 flow-source/babel.config.js\n')
-  fs.writeFileSync(babelConfigPath, "module.exports = {\n  presets: ['@vue/cli-plugin-babel/preset'],\n  compact: false\n};\n")
-}
-
 function main () {
-  if (!fs.existsSync(flowSource)) fail('缺少 executor-service/flow-source，先执行 pnpm --dir executor-service sync-source')
+  if (!fs.existsSync(flowSource)) fail('缺少 executor-service/flow-source，先准备 F-053 合成源码')
   if (!fs.existsSync(path.join(flowSource, 'package.json'))) fail('flow-source 缺少 package.json')
-  // babel.config.js 是构建输入:缺失会让 digest 计算与 vue-cli 构建同时失败,先兜底恢复再算摘要。
-  ensureBabelConfig()
+  if (!fs.existsSync(babelConfigPath)) fail('flow-source 缺少 babel.config.js，合成候选不完整')
+  let prepared
+  try {
+    prepared = verifyPreparedSource()
+  } catch (error) {
+    fail(`F-053 合成源码校验失败：${String(error?.message ?? error)}`)
+  }
 
   const digest = digestInputs()
-  if (isPageFresh(digest)) {
+  if (isPageFresh(digest, prepared.metadata.candidateDigest)) {
     process.stdout.write('[OK] 原生 /flow 页面产物已是最新，跳过构建\n')
     return
   }
 
   ensureDependencies()
   runBuild()
-  fs.writeFileSync(stampPath, `${JSON.stringify({ inputDigest: digest, builtAt: new Date().toISOString() }, null, 2)}\n`)
+  fs.writeFileSync(stampPath, `${JSON.stringify({
+    inputDigest: digest,
+    candidateDigest: prepared.metadata.candidateDigest,
+    baseHead: prepared.metadata.baseHead,
+    businessHead: prepared.metadata.businessHead,
+    mappingHash: prepared.metadata.mappingHash,
+    builtAt: new Date().toISOString()
+  }, null, 2)}\n`)
   process.stdout.write('[OK] 原生 /flow 页面产物已生成：flow-source/dist\n')
 }
 
