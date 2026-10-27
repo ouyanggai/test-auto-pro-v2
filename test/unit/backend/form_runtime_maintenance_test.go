@@ -357,6 +357,51 @@ func TestPnpmOperatorBuildConsumesSynchronizedCandidate(t *testing.T) {
 	}
 }
 
+// TestPnpmOperatorRestartReplacesSourceInPlace 验证源码切换不依赖重命名目录，并会清空旧版本的遗留文件。
+func TestPnpmOperatorRestartReplacesSourceInPlace(t *testing.T) {
+	fixture := newMaintenanceFixture(t)
+	mustWrite(t, filepath.Join(fixture.source, "src", "component.js"), "export default 'in-place-candidate'\n")
+	git(t, fixture.source, "add", ".")
+	git(t, fixture.source, "commit", "-m", "目录内切换来源")
+	state, err := fixture.inspector.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := commandRunnerFunc(func(_ context.Context, command formruntimemaintenance.Command, _ io.Writer) error {
+		writeRuntimeBuild(t, command.Env["FORM_RUNTIME_OUT_DIR"], "candidate")
+		return nil
+	})
+	operator, _ := newTestPnpmOperator(t, fixture, runner, healthCheckerFunc(func(context.Context, string, string) error { return nil }))
+	previous, err := operator.CurrentVersion(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operator.Sync(context.Background(), 4, state, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := operator.BuildCandidate(context.Background(), 4, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveSource := filepath.Join(fixture.workspace, "form-runtime", "runtime-source")
+	mustWrite(t, filepath.Join(liveSource, "stale.js"), "previous-only")
+	if err := operator.Restart(context.Background(), candidate, previous, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	component, err := os.ReadFile(filepath.Join(liveSource, "src", "component.js"))
+	if err != nil || !strings.Contains(string(component), "in-place-candidate") {
+		t.Fatalf("候选源码未在原目录生效：content=%s err=%v", component, err)
+	}
+	if _, err := os.Stat(filepath.Join(liveSource, "stale.js")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("旧源码文件未清理：err=%v", err)
+	}
+	for _, name := range []string{".candidate", ".previous"} {
+		if _, err := os.Stat(liveSource + name); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("仍依赖兄弟切换目录 %s：err=%v", name, err)
+		}
+	}
+}
+
 type fakeRuntimeOperator struct {
 	current      string
 	restartCalls int

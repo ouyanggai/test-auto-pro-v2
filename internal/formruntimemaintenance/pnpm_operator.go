@@ -397,7 +397,7 @@ func (o *PnpmOperator) Verify(ctx context.Context, candidate, previous string, o
 	return o.rollback(ctx, previous, fmt.Errorf("最终 HTTP 健康检查失败: %w", err), output)
 }
 
-// deploy 切换 live 源码和产物；产物挂载点不能重命名，因此在挂载点内按资源、入口、健康的顺序切换。
+// deploy 切换 live 源码和产物；两个目录本身都可能来自挂载点或镜像层，因此都只在目录内替换内容。
 func (o *PnpmOperator) deploy(ctx context.Context, version string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -410,23 +410,10 @@ func (o *PnpmOperator) deploy(ctx context.Context, version string) error {
 	if _, err := readRuntimeSourceMetadata(runtimeSource); err != nil {
 		return err
 	}
-	nextSource, previousSource := o.liveSourceDir+".candidate", o.liveSourceDir+".previous"
-	for _, directory := range []string{nextSource, previousSource} {
-		if err := os.RemoveAll(directory); err != nil {
-			return err
-		}
-	}
-	if err := copyDirectory(runtimeSource, nextSource); err != nil {
-		return err
-	}
 	if err := o.publishBuildInPlace(buildSource, version); err != nil {
-		_ = os.RemoveAll(nextSource)
 		return err
 	}
-	if err := moveIfPresent(o.liveSourceDir, previousSource); err != nil {
-		return err
-	}
-	if err := os.Rename(nextSource, o.liveSourceDir); err != nil {
+	if err := o.publishSourceInPlace(runtimeSource); err != nil {
 		return err
 	}
 	if err := o.writeState(version); err != nil {
@@ -435,8 +422,18 @@ func (o *PnpmOperator) deploy(ctx context.Context, version string) error {
 	if err := o.removeMaintenanceScratch(); err != nil {
 		return err
 	}
-	_ = os.RemoveAll(previousSource)
 	return nil
+}
+
+// publishSourceInPlace 在保持 runtime-source 目录本身不动的前提下替换其内容。
+// 镜像层目录在 OverlayFS 中可能无法 rename 到父目录，服务产物也已先行完成候选切换，
+// 因此源码只作为下一次维护任务的输入，用完整版本快照在原目录内恢复。
+func (o *PnpmOperator) publishSourceInPlace(source string) error {
+	if err := replaceDirectoryContents(source, o.liveSourceDir); err != nil {
+		return err
+	}
+	_, err := readRuntimeSourceMetadata(o.liveSourceDir)
+	return err
 }
 
 // publishBuildInPlace 在不能重命名的 live 卷挂载点内切换构建产物。
@@ -529,26 +526,6 @@ func (o *PnpmOperator) removeMaintenanceScratch() error {
 		}
 	}
 	return nil
-}
-
-// moveIfPresent 把当前目录移到同父级 previous；目录尚不存在时允许首次部署继续。
-func moveIfPresent(source, target string) error {
-	if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	return os.Rename(source, target)
-}
-
-// restoreMoved 把 previous 恢复到 live，用于多目录切换中途失败。
-func restoreMoved(source, target string) error {
-	if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	return os.Rename(source, target)
 }
 
 // rollback 恢复 previous 的源码和产物，并再次通过同一 HTTP 地址核验。
@@ -644,6 +621,29 @@ func validVersion(version string) bool { return versionNamePattern.MatchString(v
 // copyDirectory 精确复制源码或构建产物，不跟随符号链接。
 func copyDirectory(source, target string) error {
 	if err := os.RemoveAll(target); err != nil {
+		return err
+	}
+	return copyDirectoryContents(source, target)
+}
+
+// replaceDirectoryContents 只清理目标目录的子项，再从版本快照完整复制。
+// 不重命名目标目录本身，避免 Docker 镜像层或挂载点上的 EXDEV/EBUSY。
+func replaceDirectoryContents(source, target string) error {
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(target, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return copyDirectoryContents(source, target)
+}
+
+// copyDirectoryContents 把源目录完整写入已存在的目标目录，不跟随符号链接。
+func copyDirectoryContents(source, target string) error {
+	if err := os.MkdirAll(target, 0o755); err != nil {
 		return err
 	}
 	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
