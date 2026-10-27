@@ -391,7 +391,8 @@ export function prepareSource () {
   const mapHash = mappingHash(manifest)
   const current = readCurrentMetadata()
   if (current?.schemaVersion === 2 && current.baseHead === base.head &&
-      current.businessHead === business.head && current.mappingHash === mapHash) {
+      current.businessHead === business.head && current.mappingHash === mapHash &&
+      fs.existsSync(targetRoot)) {
     const verified = verifyPreparedSource()
     process.stdout.write(`[GIT] 合成候选已冻结：基座 ${base.head}，全过程 ${business.head}\n`)
     return verified.metadata

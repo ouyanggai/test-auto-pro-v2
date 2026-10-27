@@ -205,6 +205,20 @@ test('临时远端只消费 test，不读取 oygdev2 工作树，远端前移后
   assert.match(git(fixture.business.worktree, 'status', '--short'), /contract\.js/)
 })
 
+test('候选目录被清理后，相同冻结来源也会重新生成候选', context => {
+  const fixture = createFixture(context)
+  runSync(fixture.serviceRoot, fixture.workspaceRoot)
+  const first = readJson(path.join(fixture.serviceRoot, 'flow-source.json'))
+
+  fs.rmSync(path.join(fixture.serviceRoot, 'flow-source'), { recursive: true, force: true })
+  runSync(fixture.serviceRoot, fixture.workspaceRoot)
+
+  const rebuilt = readJson(path.join(fixture.serviceRoot, 'flow-source.json'))
+  assert.equal(fs.existsSync(path.join(fixture.serviceRoot, 'flow-source/src/utils/contractAmount.js')), true)
+  assert.equal(rebuilt.businessHead, first.businessHead)
+  assert.equal(rebuilt.candidateDigest, first.candidateDigest)
+})
+
 test('候选被改动或业务远端不可读时明确失败，不沿用旧候选', context => {
   const fixture = createFixture(context)
   runSync(fixture.serviceRoot, fixture.workspaceRoot)
