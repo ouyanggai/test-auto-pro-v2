@@ -1389,7 +1389,9 @@ async function main (): Promise<void> {
             // 供失败诊断与端点级证据核对。
             const debugWrites = session.route!.trace.list()
               .filter(e => e.seq > baselineSeq &&
-                ['/web/flowInstanceApi/submit', '/flowInstanceApi/audit', '/web/flowInstanceApi/transpond',
+                ['/web/flowInstanceApi/submit', '/newWorkflowCenter/flowInstance/submit',
+                  '/newWorkflowCenter/flowInstance/reSubmit', '/newWorkflowCenter/flowInstance/flowAudit',
+                  '/flowInstanceApi/audit', '/web/flowInstanceApi/transpond',
                   '/web/flowInstanceApi/storageFormData', '/web/flowInstanceApi/reSubmit',
                   '/web/flowInstancePostscript/save'].some(p => e.url.includes(p)))
               .map(e => {
@@ -1417,7 +1419,9 @@ async function main (): Promise<void> {
             // 新实例 ID（发起链）：主实例写响应 data.id 是引擎核验与后续步骤的实例引用来源。
             let newInstanceId = ''
             for (const write of debugWrites) {
-              if (write.isPermissionCheck || !write.url.includes('/web/flowInstanceApi/submit') || !write.responseBody) continue
+              const isInstanceSubmit = write.url.includes('/web/flowInstanceApi/submit') ||
+                write.url.includes('/newWorkflowCenter/flowInstance/submit')
+              if (write.isPermissionCheck || !isInstanceSubmit || !write.responseBody) continue
               try {
                 const parsed = JSON.parse(write.responseBody) as { data?: { id?: unknown } }
                 const responseId = String(parsed?.data?.id ?? '').trim()

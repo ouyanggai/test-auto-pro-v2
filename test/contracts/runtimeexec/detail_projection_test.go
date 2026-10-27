@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/runtimeexec"
 )
 
@@ -96,5 +97,14 @@ func TestDetailProjectionKeepsSequenceAndReadWriteClass(t *testing.T) {
 	raw, _ := json.Marshal(detail)
 	if strings.Contains(string(raw), "durationMs") || strings.Contains(string(raw), "SECRET") {
 		t.Fatalf("页面墙钟耗时不能冒充接口传输耗时：%s", raw)
+	}
+}
+
+// TestNewWorkflowSubmitIsFlowWrite 新工作流正式提交必须进入“流程动作”阶段并按写请求分类。
+func TestNewWorkflowSubmitIsFlowWrite(t *testing.T) {
+	trace := json.RawMessage(`[{"seq":1,"method":"POST","url":"https://t/api` + target.RuntimeSubmitEndpoint + `","state":"fulfilled","httpStatus":200}]`)
+	detail := runtimeexec.BuildDetailProjection(runtimeexec.ActionRunResult{Status: "success"}, trace, "v2")
+	if detail.Stages[1].Requests != 1 || detail.Requests[0].RequestClass != "write" {
+		t.Fatalf("新提交阶段或请求分类错误：%+v", detail)
 	}
 }

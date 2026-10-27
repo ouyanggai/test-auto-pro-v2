@@ -10,7 +10,7 @@ import (
 )
 
 // TargetPathPrefixes 是目标平台请求的路径前缀允许清单：命中任一前缀的页面请求必须转发 Go。
-var TargetPathPrefixes = []string{"/web/", "/flowInstanceApi", "/api/"}
+var TargetPathPrefixes = []string{"/web/", "/flowInstanceApi", "/newWorkflowCenter/", "/api/"}
 
 // ForwardedRequest 是 request_forward 消息的载荷形状（与 TS 侧 RequestForwardPayload 对齐）。
 // Body 为原样正文；二进制（上传）按 bodyEncoding=base64 保真，内网日志不脱敏。

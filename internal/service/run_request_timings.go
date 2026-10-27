@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
 )
@@ -237,6 +238,9 @@ var writeEndpointWhitelist = []string{
 	"flowInstanceApi/updateFlowProxy",
 	"flowInstanceApi/storageFormData",
 	"flowInstanceApi/reSubmit",
+	target.RuntimeSubmitEndpoint,
+	target.RuntimeReSubmitEndpoint,
+	target.RuntimeAuditEndpoint,
 	"flowInstancePostscript/save",
 }
 

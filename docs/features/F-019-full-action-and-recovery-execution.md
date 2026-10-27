@@ -37,9 +37,9 @@
 
 ## 写端点白名单
 
-本切片允许调用的目标写端点仅为动作目录已声明的 12 个端点：
+2026-10-27 起当前动作目录已跟随新工作流页面契约；本节允许的目标写端点为动作目录当前声明的端点：
 
-`/web/flowInstanceApi/submit`、`/web/flowInstanceApi/reSubmit`、`/web/flowInstanceApi/storageFormData`、`/web/flowInstanceApi/approverAppend`、`/web/flowInstanceApi/updateFlowProxy`、`/flowInstanceApi/audit`、`/web/flowInstanceApi/rollBackThePreviousLevel`、`/web/flowInstanceApi/retrieveProcess`、`/web/flowInstanceApi/revocation`、`/web/urgeHandleRecord/sendUrgeMessage`、`/web/flowInstanceApi/transpond`、`/web/flowInstanceApi/flowTracking`。
+`/web/flowInstanceApi/submit`（保存草稿）、`/newWorkflowCenter/flowInstance/submit`、`/newWorkflowCenter/flowInstance/reSubmit`、`/newWorkflowCenter/flowInstance/flowAudit`、`/web/flowInstanceApi/storageFormData`、`/web/flowInstanceApi/approverAppend`、`/web/flowInstanceApi/updateFlowProxy`、`/web/flowInstanceApi/rollBackThePreviousLevel`、`/web/flowInstanceApi/retrieveProcess`、`/web/flowInstanceApi/revocation`、`/web/urgeHandleRecord/sendUrgeMessage`、`/web/flowInstanceApi/transpond`、`/web/flowInstanceApi/flowTracking`。
 
 契约只允许实际请求集合成为上述集合的子集；读请求仍可调用 F-016 已允许的只读端点。每次尝试最多一次写请求，任何第二次写都必须是 F-018 允许的全新重放尝试。
 

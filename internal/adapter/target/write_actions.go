@@ -27,6 +27,15 @@ const (
 	WriteEndpointFlowTracking    = "/web/flowInstanceApi/flowTracking"
 )
 
+// RuntimeSubmitEndpoint 是页面正式发起流程的新工作流端点；保存草稿仍使用 WriteEndpointSubmit。
+const RuntimeSubmitEndpoint = "/newWorkflowCenter/flowInstance/submit"
+
+// RuntimeReSubmitEndpoint 是页面重新发起流程的新工作流端点。
+const RuntimeReSubmitEndpoint = "/newWorkflowCenter/flowInstance/reSubmit"
+
+// RuntimeAuditEndpoint 是页面审批流程的新工作流端点。
+const RuntimeAuditEndpoint = "/newWorkflowCenter/flowInstance/flowAudit"
+
 // ActionWriteRequest 是动作写请求的统一意图：执行器按动作填充，适配层负责协议。
 type ActionWriteRequest struct {
 	// Action 是动作键，决定端点与载荷形状（同一端点不同动作不混淆）。

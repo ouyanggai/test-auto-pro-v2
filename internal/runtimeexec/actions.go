@@ -27,19 +27,20 @@ type ActionEntry struct {
 
 // 写端点直接引用 adapter 的唯一常量，避免散落字面量。
 var (
-	endpointSubmit       = target.WriteEndpointSubmit
-	endpointAudit        = target.WriteEndpointAudit
-	endpointReSubmit     = target.WriteEndpointReSubmit
-	endpointStorageForm  = target.WriteEndpointStorageForm
-	endpointTranspond    = target.WriteEndpointTranspond
-	endpointFlowTracking = target.WriteEndpointFlowTracking
-	endpointUpdateProxy  = target.WriteEndpointUpdateFlowProxy
-	endpointAppend       = target.WriteEndpointApproverAppend
-	endpointRollBack     = target.WriteEndpointRollBack
-	endpointRetrieve     = target.WriteEndpointRetrieve
-	endpointRevocation   = target.WriteEndpointRevocation
-	endpointUrge         = target.WriteEndpointUrge
-	endpointPostscript   = target.FlowPostscriptEndpoint
+	endpointSubmit          = target.WriteEndpointSubmit
+	endpointRuntimeSubmit   = target.RuntimeSubmitEndpoint
+	endpointRuntimeReSubmit = target.RuntimeReSubmitEndpoint
+	endpointRuntimeAudit    = target.RuntimeAuditEndpoint
+	endpointStorageForm     = target.WriteEndpointStorageForm
+	endpointTranspond       = target.WriteEndpointTranspond
+	endpointFlowTracking    = target.WriteEndpointFlowTracking
+	endpointUpdateProxy     = target.WriteEndpointUpdateFlowProxy
+	endpointAppend          = target.WriteEndpointApproverAppend
+	endpointRollBack        = target.WriteEndpointRollBack
+	endpointRetrieve        = target.WriteEndpointRetrieve
+	endpointRevocation      = target.WriteEndpointRevocation
+	endpointUrge            = target.WriteEndpointUrge
+	endpointPostscript      = target.FlowPostscriptEndpoint
 )
 
 // runtimeActionEntries 是唯一登记表。
@@ -50,7 +51,7 @@ var runtimeActionEntries = map[string]ActionEntry{
 	},
 	"submit": {
 		Action: "submit", Host: "initiate", EntryMethod: "sumbitFlow('submit')",
-		WriteEndpoints: []string{endpointSubmit},
+		WriteEndpoints: []string{endpointRuntimeSubmit},
 		// 提交可能在首次调用后要求选择分支/人员：继续方法仍是提交入口（formMakingFormBusiness→enterpriseHandleSubmit）。
 		ContinueMethod: "handleSaveBranchChooseNode/handleSaveParallelChooseNode/getSelectPerson",
 	},
@@ -60,16 +61,16 @@ var runtimeActionEntries = map[string]ActionEntry{
 	},
 	"approve": {
 		Action: "approve", Host: "approve", EntryMethod: "formMakingFormBusiness(true,'pass')",
-		WriteEndpoints: []string{endpointAudit},
+		WriteEndpoints: []string{endpointRuntimeAudit},
 		ContinueMethod: "handleSaveBranchChooseNode/handleSaveParallelChooseNode/getSelectPerson",
 	},
 	"reject": {
 		Action: "reject", Host: "approve", EntryMethod: "formMakingFormBusiness(null,'no_pass')",
-		WriteEndpoints: []string{endpointAudit},
+		WriteEndpoints: []string{endpointRuntimeAudit},
 	},
 	"resubmit": {
 		Action: "resubmit", Host: "approve", EntryMethod: "reSubmitFormMakingFormBusiness(true)（isReInitiate）",
-		WriteEndpoints: []string{endpointReSubmit},
+		WriteEndpoints: []string{endpointRuntimeReSubmit},
 		ContinueMethod: "handleSaveBranchChooseNode/handleSaveParallelChooseNode/getSelectPerson",
 	},
 	"forward": {

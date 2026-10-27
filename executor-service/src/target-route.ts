@@ -9,7 +9,7 @@ import type { ExecutionBaselineRecorder } from './execution-baseline.ts'
 
 // TARGET_PATH_PREFIXES 与 Go 侧 internal/runtimeexec（forward.go）镜像维护：
 // 命中任一前缀的请求都视为目标平台请求，必须经过 Go 转发。
-export const TARGET_PATH_PREFIXES = ['/web/', '/flowInstanceApi', '/api/', '/api']
+export const TARGET_PATH_PREFIXES = ['/web/', '/flowInstanceApi', '/newWorkflowCenter/', '/api/', '/api']
 
 // TARGET_PREFIXES 匹配规则：路径包含目标段即目标请求，与来源主机无关——
 // 目标网关主机可能随部署变化，且构建产物可能把绝对网关地址（含 /api 前缀）烘焙进页面，
@@ -47,7 +47,7 @@ export interface TargetRouteOptions {
     action: string
     writeSequence?: number
   }) => Promise<ForwardOutcome>
-  // toolFlowName 非空时，主实例 submit 请求（保存草稿/提交）的 data.name 在发出前恢复为工具流程名称，
+  // toolFlowName 非空时，主实例 submit 请求（保存草稿/正式提交）的 data.name 在发出前恢复为工具流程名称，
   // 目标页面脚本拼装的名称不得覆盖工具值（设计 5.2）；其他业务字段保留目标脚本结果。
   toolFlowName?: string
 }
@@ -102,7 +102,7 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
       body &&
       toolFlowName &&
       request.method() === 'POST' &&
-      /\/web\/flowInstanceApi\/submit$/.test(new URL(request.url()).pathname)
+      /\/(web\/flowInstanceApi\/submit|newWorkflowCenter\/flowInstance\/submit)$/.test(new URL(request.url()).pathname)
     ) {
       // 工具流程名称保护：只改写主实例 submit 的 data.name，其余字段原样保留。
       try {

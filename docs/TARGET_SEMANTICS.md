@@ -156,20 +156,24 @@ deployment=未取得（目标平台不提供版本接口）
 
 状态：已勘定（F-014）。对照测试：`test/unit/backend/target_semantics/`、`test/integration/f014_error_semantics_readonly_test.go`。
 
-### 1.1 两条路由族与门禁
+### 1.1 路由族与门禁
 
-本工具动作目录共 15 条动作、12 个不同写端点（`internal/engine/actioncatalog/catalog.go`）。它们分属两条路由族，经过的门禁不同，因此失败形状不同。
+2026-10-27 起执行器页面跟随 `rsh-flow-components/test@546ca9c8` 的当前契约：保存草稿仍走旧
+`saveFlowInstance`；正式提交、重新提交和审批改走 `newWorkflowCenter` 三个端点。旧正式端点只保留
+给历史事实、权限预检与保存草稿解释，不再作为 runtime 正式动作的期望写端点。
+
+本工具动作目录共 15 条动作、13 个当前不同写端点（`internal/engine/actioncatalog/catalog.go`）。它们分属多条路由族，失败形状必须按当次端点重新核对。
 
 | 动作 | 动作标识 | 目标端点 | 路由族 | `@FlowSubmitVerify` | `@Consistency` |
 | --- | --- | --- | --- | --- | --- |
 | 保存草稿 | `save_draft` | `/web/flowInstanceApi/submit` | web | 无 | **有** |
-| 提交 | `submit` | `/web/flowInstanceApi/submit` | web | 无 | **有** |
-| 重新提交 | `resubmit` | `/web/flowInstanceApi/reSubmit` | web | 无 | 无 |
+| 提交 | `submit` | `/newWorkflowCenter/flowInstance/submit` | 新工作流 | 待重新勘定 | 待重新勘定 |
+| 重新提交 | `resubmit` | `/newWorkflowCenter/flowInstance/reSubmit` | 新工作流 | 待重新勘定 | 待重新勘定 |
 | 暂存当前表单 | `storage_form_data` | `/web/flowInstanceApi/storageFormData` | web | 无 | 无 |
 | 加签 | `add_sign` | `/web/flowInstanceApi/updateFlowProxy` | web | 无 | 无 |
 | 移交 | `transfer` | `/web/flowInstanceApi/approverAppend` | web | 无 | 无 |
-| 同意 | `approve` | `/flowInstanceApi/audit` | 中心 api | 无 | 无 |
-| 不同意 | `reject` | `/flowInstanceApi/audit` | 中心 api | 无 | 无 |
+| 同意 | `approve` | `/newWorkflowCenter/flowInstance/flowAudit` | 新工作流 | 待重新勘定 | 待重新勘定 |
+| 不同意 | `reject` | `/newWorkflowCenter/flowInstance/flowAudit` | 新工作流 | 待重新勘定 | 待重新勘定 |
 | 回退上一节点 | `rollback_previous` | `/web/flowInstanceApi/rollBackThePreviousLevel` | web | **有** | 无 |
 | 取回 | `retrieve` | `/web/flowInstanceApi/retrieveProcess` | web | **有** | 无 |
 | 撤回 | `withdraw` | `/web/flowInstanceApi/revocation` | web | **有** | 无 |
@@ -178,7 +182,7 @@ deployment=未取得（目标平台不提供版本接口）
 | 关注 | `follow` | `/web/flowInstanceApi/flowTracking` | web | 无 | 无 |
 | 取消关注 | `unfollow` | `/web/flowInstanceApi/flowTracking` | web | 无 | 无 |
 
-两条族的归属证据：
+历史 web 与中心 api 路由族的归属证据仍用于解释旧端点：
 
 ```evidence
 file=参考代码/java-serve/rsh-cloud-web-api/src/main/java/com/rsh/cloud/web/api/controller/ops/flow/FlowInstanceWebController.java
@@ -198,11 +202,22 @@ head=java-serve/rsh-cloud-workflow-center-api@088aed79ad0b
 deployment=未取得（目标平台不提供版本接口）
 ```
 
+当前 runtime 三个新工作流端点的页面来源：
+
+```evidence
+file=executor-service/flow-source/src/api/index.js
+line=759
+contains=flowSubmit: '/newWorkflowCenter/flowInstance/submit'
+strength=源码可证明
+head=rsh-flow-components/test@546ca9c87a5155428f4a904efbf26c7b814a6289
+deployment=2026-10-27 线上执行器候选
+```
+
 必须写清的三件事：
 
-1. **同意与不同意不经过 `@FlowSubmitVerify`。** 工具用的是无 `/web` 前缀的 `/flowInstanceApi/audit`，该控制器方法只有 `@ParaCheck({})`。`/web/flowInstanceApi/audit` 确实带 `@FlowSubmitVerify(submitType = audit)`，但那是另一个端点，工具不调用它。真实前端也走无前缀路径（`api/index.js:498` `submitTask: '/flowInstanceApi/audit'`）。
-2. **`/web/flowInstanceApi/v1` 是另一个控制器**（`FlowInstanceWebControllerV1`，`@RequestMapping("/web/flowInstanceApi/v1")`），带自己的 `@Consistency`。工具不调用 v1 路径，勘定时不要把两个控制器的注解混读。
-3. **只有 submit 带 `@Consistency`**，且 `deleteMethodName = "delete"`。批次号的携带规则见第 2.2 节 F-035 逐接口矩阵。
+1. 旧 `/flowInstanceApi/audit` 的“无 `@FlowSubmitVerify`”结论只属于旧端点，不能迁移到当前 `/newWorkflowCenter/flowInstance/flowAudit`。
+2. `/web/flowInstanceApi/v1` 是另一个控制器，带自己的 `@Consistency`；当前工具不调用 v1 路径。
+3. 已证实的 `@Consistency` 仍只在旧 `/web/flowInstanceApi/submit` 上；新 submit 的后端注解未重新勘定前按待核对处理，不能把注解结论跨端点迁移。
 
 ```evidence
 file=参考代码/java-serve/rsh-cloud-web-api/src/main/java/com/rsh/cloud/web/api/controller/ops/flow/FlowInstanceWebController.java
@@ -351,7 +366,7 @@ deployment=已实测：auditWay 返回字符串编码名，说明 20260828 迁�
 
 同范围内的相似问题检查结论（不在本切片改动）：
 
-- 动作目录的路由族与真实前端一致，逐条核对了 12 个端点，只有审批走无 `/web` 前缀，与 `api/index.js` 相符。
+- 历史勘定逐条核对了 12 个旧端点，只有审批走无 `/web` 前缀；2026-10-27 当前页面已把正式提交、重提与审批切到 `newWorkflowCenter`，注解与失败清单需按新端点重新取证。
 - 工具当前没有其它按 `code` 判成败的位置：`responseSucceeded` 只看 `isSuccess`/`success`，方向正确。
 
 ### 1.6 三值判定规则
@@ -527,9 +542,12 @@ deployment=未取得（目标平台不提供版本接口）
 
 | 端点 | `batchCode` | 证据 |
 | --- | --- | --- |
-| `/web/flowInstanceApi/submit`（新建提交、保存草稿，FormMaking 与无表单页面同源） | `required`（顶层） | FlowDialog.enterpriseHandleSubmit `param.batchCode = this.batchCode`（:875），弹窗 data 初始化 `batchCode: generateRandomId(32)`（:261）；人工成功 curl 运行 7 同计划 |
-| `/web/flowInstanceApi/reSubmit` | `forbidden` | examineOpinion 重提页面不生成、不发送批次号 |
-| `/flowInstanceApi/audit` | `forbidden` | examineOpinion.handleSubmitCheck 无批次号 |
+| `/web/flowInstanceApi/submit`（当前保存草稿；历史正式提交与权限预检） | `required`（顶层） | FlowDialog.enterpriseHandleSubmit `param.batchCode = this.batchCode`（:875），弹窗 data 初始化 `batchCode: generateRandomId(32)`（:261）；人工成功 curl 运行 7 同计划 |
+| `/newWorkflowCenter/flowInstance/submit`（当前正式提交） | `required`（顶层） | 目标页面复用 FlowDialog 同一 `param` 后仅切换 API 常量，批次号形状不得丢失 |
+| `/web/flowInstanceApi/reSubmit`（历史正式重提） | `forbidden` | examineOpinion 重提页面不生成、不发送批次号 |
+| `/newWorkflowCenter/flowInstance/reSubmit`（当前正式重提） | `forbidden` | 目标页面复用原重提载荷构造，无批次号 |
+| `/flowInstanceApi/audit`（历史审批） | `forbidden` | examineOpinion.handleSubmitCheck 无批次号 |
+| `/newWorkflowCenter/flowInstance/flowAudit`（当前审批） | `forbidden` | 目标页面复用原审批载荷构造，无批次号 |
 | 其余动作端点（暂存、回退、取回、撤回、移交、加签、转发、关注、催办） | `forbidden`（未登记前禁止进入实现） | 各自页面构造无批次号；新增证据必须先登记矩阵 |
 
 `@Consistency` 的批次补偿风险重新表述：工具按目标页面同形状携带 `batchCode` 时，`submit` 失败可能触发目标自身的删除回滚——这是目标平台自身行为，不是工具可选择的；工具侧防护是「一次写 + 写后对账」，不因补偿风险回退到与目标页面不一致的请求形状。
@@ -552,7 +570,7 @@ head=rsh-framework-all@84bb19736a8a
 deployment=未取得（目标平台不提供版本接口）
 ```
 
-`/web/flowInstanceApi/submit` 是 12 个端点中唯一带 `@Consistency` 的，其 `deleteMethodName = "delete"`，即回滚动作是删除流程实例。字段存在性矩阵由 `internal/adapter/target/ProtocolMatrix()` 与 `test/contracts/f035/protocol/` 契约测试双向锁定。
+已勘定的旧 `/web/flowInstanceApi/submit` 带 `@Consistency`，其 `deleteMethodName = "delete"`，即回滚动作是删除流程实例；新工作流 submit 的注解语义未重新勘定，不得沿用该结论。字段存在性矩阵由 `internal/adapter/target/ProtocolMatrix()` 与 `test/contracts/f035/protocol/` 契约测试双向锁定。
 
 动作目录里的 `batchNo` 是另一个业务字段（移交/待办快照），与 `batchCode` 无关。
 
@@ -723,7 +741,9 @@ deployment=2026-09-05 未取得（前端部署版本未核对）
 
 状态：勘定中（F-016 实测，接受侧已证实的部分见下；其余仍标注待实测）。
 
-实测问题：提交（`/web/flowInstanceApi/submit`）遇到手动条件分支节点时，所选分支如何随请求传递。
+实测问题：提交流程遇到手动条件分支节点时，所选分支如何随请求传递。历史实测发生在旧
+`/web/flowInstanceApi/submit`；当前页面正式提交为 `/newWorkflowCenter/flowInstance/submit`，
+选择错误的响应形状仍按当次端点原样记录，不能把旧端点结论当成新端点验收。
 
 实测结论（2026-09-05，计划 11 路径 1121 真实提交）：
 

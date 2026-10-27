@@ -7,13 +7,16 @@
 import { RequestTraceRecorder, type TraceEntry } from './request-trace.ts'
 
 // FLOW_WRITE_PATHS 是流程主写端点：它们的成败决定主实例是否推进（转发的辅助实例创建同属主写）。
-// 端点真名来自 flow-source/src/api/index.js（P1-7 修正）：
-//   saveFlowInstance=/web/flowInstanceApi/submit、submitTask=/flowInstanceApi/audit（无 /web 前缀）、
-//   transpondFlow=/web/flowInstanceApi/transpond、storageFormData=/web/flowInstanceApi/storageFormData、
-//   saveFlowInstanceAgain=/web/flowInstanceApi/reSubmit。
+// 端点真名来自 flow-source/src/api/index.js：
+//   保存草稿仍用 saveFlowInstance=/web/flowInstanceApi/submit；
+//   正式提交/重提/审批已切换到 newWorkflowCenter 的三个端点；
+//   transpondFlow=/web/flowInstanceApi/transpond、storageFormData=/web/flowInstanceApi/storageFormData。
 // 曾被错写的 temporaryStorage/reEdit 端点在目标源码中不存在，已删除。
 const FLOW_WRITE_PATHS = [
   '/web/flowInstanceApi/submit',
+  '/newWorkflowCenter/flowInstance/submit',
+  '/newWorkflowCenter/flowInstance/reSubmit',
+  '/newWorkflowCenter/flowInstance/flowAudit',
   '/flowInstanceApi/audit',
   '/web/flowInstanceApi/transpond',
   '/web/flowInstanceApi/storageFormData',
@@ -22,11 +25,11 @@ const FLOW_WRITE_PATHS = [
 
 const ACTION_WRITE_PATH: Record<string, string> = {
   save_draft: '/web/flowInstanceApi/submit',
-  submit: '/web/flowInstanceApi/submit',
+  submit: '/newWorkflowCenter/flowInstance/submit',
   storage_form_data: '/web/flowInstanceApi/storageFormData',
-  approve: '/flowInstanceApi/audit',
-  reject: '/flowInstanceApi/audit',
-  resubmit: '/web/flowInstanceApi/reSubmit',
+  approve: '/newWorkflowCenter/flowInstance/flowAudit',
+  reject: '/newWorkflowCenter/flowInstance/flowAudit',
+  resubmit: '/newWorkflowCenter/flowInstance/reSubmit',
   forward: '/web/flowInstanceApi/transpond'
 }
 

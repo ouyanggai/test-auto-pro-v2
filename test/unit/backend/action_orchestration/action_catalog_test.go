@@ -3,6 +3,7 @@ package action_orchestration_test
 import (
 	"testing"
 
+	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/engine/actioncatalog"
 	"test-auto-pro-v2/internal/model"
 )
@@ -49,6 +50,14 @@ func TestActionCatalogExposesStableGroupsAndTargetParameters(t *testing.T) {
 	}
 	if byAction[model.ActionSaveDraft].TargetOperation != "/web/flowInstanceApi/submit" || byAction[model.ActionStorageFormData].TargetOperation != "/web/flowInstanceApi/storageFormData" {
 		t.Fatalf("草稿和审批暂存目标接口不正确：draft=%s storage=%s", byAction[model.ActionSaveDraft].TargetOperation, byAction[model.ActionStorageFormData].TargetOperation)
+	}
+	if byAction[model.ActionSubmit].TargetOperation != target.RuntimeSubmitEndpoint ||
+		byAction[model.ActionResubmit].TargetOperation != target.RuntimeReSubmitEndpoint ||
+		byAction[model.ActionApprove].TargetOperation != target.RuntimeAuditEndpoint ||
+		byAction[model.ActionReject].TargetOperation != target.RuntimeAuditEndpoint {
+		t.Fatalf("正式流程动作目标接口不正确：submit=%s resubmit=%s approve=%s reject=%s",
+			byAction[model.ActionSubmit].TargetOperation, byAction[model.ActionResubmit].TargetOperation,
+			byAction[model.ActionApprove].TargetOperation, byAction[model.ActionReject].TargetOperation)
 	}
 }
 

@@ -242,6 +242,27 @@ var endpointFieldMatrix = map[string]map[string]FieldPresence{
 	},
 }
 
+// init 为 runtime 页面三个新工作流正式写端点登记字段矩阵。目标页面仍复用旧提交、
+// 重提和审批的载荷构造函数，只是切换 API 常量；显式复制同源矩阵可保证新端点
+// 不因“未直接构造”而绕过逐字段协议契约。
+func init() {
+	for _, item := range []struct {
+		endpoint string
+		source   string
+	}{
+		{RuntimeSubmitEndpoint, WriteEndpointSubmit},
+		{RuntimeReSubmitEndpoint, WriteEndpointReSubmit},
+		{RuntimeAuditEndpoint, WriteEndpointAudit},
+	} {
+		source := endpointFieldMatrix[item.source]
+		copied := make(map[string]FieldPresence, len(source))
+		for field, presence := range source {
+			copied[field] = presence
+		}
+		endpointFieldMatrix[item.endpoint] = copied
+	}
+}
+
 // NewBatchCode 生成目标 FlowDialog 同形状的 32 位十六进制批次号。
 // 它只在 submit/draft（FlowDialog enterpriseHandleSubmit）顶层携带，生命周期与目标页面
 // 「打开弹窗生成、随提交发送」一致；绝不是工具幂等键：写请求仍只发送一次，

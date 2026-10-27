@@ -181,7 +181,10 @@ func TestProtocolMatrixRegistry(t *testing.T) {
 		target.PresenceRequired: true, target.PresenceOptional: true,
 		target.PresenceEmpty: true, target.PresenceForbidden: true,
 	}
-	for _, endpoint := range []string{target.WriteEndpointSubmit, target.WriteEndpointReSubmit, target.WriteEndpointAudit} {
+	for _, endpoint := range []string{
+		target.WriteEndpointSubmit, target.WriteEndpointReSubmit, target.WriteEndpointAudit,
+		target.RuntimeSubmitEndpoint, target.RuntimeReSubmitEndpoint, target.RuntimeAuditEndpoint,
+	} {
 		fields, ok := matrix[endpoint]
 		if !ok {
 			t.Fatalf("端点 %s 未登记协议矩阵", endpoint)

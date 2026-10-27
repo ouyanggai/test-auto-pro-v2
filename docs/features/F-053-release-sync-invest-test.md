@@ -127,6 +127,10 @@
 
 ### 已执行验证
 
+- 2026-10-27 新工作流端点修复：运行 6 的失败事实为旧 `/web/flowInstanceApi/submit` 权限预检成功后，正式请求已改为 `POST /api/newWorkflowCenter/flowInstance/submit` 并返回 `isSuccess=true`、创建实例 `3b98cc7fb0694730832b71d07de5eb30`；工具完成检测仍等待旧正式端点，因此误报“动作没有发出期望写请求”。已将 runtime 正式 `submit`、`resubmit`、`approve`、`reject` 切换到新工作流端点，保存草稿保持旧 submit，权限预检继续排除，不把预检当写。目标路径转发、写出白名单、协议矩阵、动作目录、运行详情阶段与新实例 ID 解析同步更新。
+- `node --experimental-strip-types --test test/unit/executor-service/completion.test.ts test/unit/executor-service/target-route.test.ts`：29 项通过，覆盖权限预检 + 新正式提交、保存草稿旧端点、正式提交拒绝旧端点、新重提端点、新端点流程名恢复与 `/newWorkflowCenter` 路由。
+- `pnpm --dir executor-service typecheck` 通过。
+- `go test ./internal/adapter/target ./internal/runtimeexec ./internal/engine/actioncatalog ./internal/service ./test/contracts/form-runtime ./test/contracts/runtimeexec ./test/contracts/executor-service ./test/unit/backend/action_orchestration ./test/unit/backend/target` 通过；`go test ./test/contracts/f035/protocol -run "TestProtocolMatrixRegistry|TestActionBodiesMatchMatrix" -v` 通过。该包全量另有一个与本修复无关的既有 `TestSpecialBusinessLifecycleRegistry` 断言失败（测试期待已实现的合同盖章阻塞，与当前实现登记相矛盾），未纳入本次修复。
 - `node --check executor-service/scripts/sync-flow-source.js`
 - `node --check executor-service/scripts/source-integrity.js`
 - `node --check executor-service/scripts/build-native-page.js`

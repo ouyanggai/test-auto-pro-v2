@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/runtimeexec"
 )
 
@@ -29,6 +30,14 @@ func TestRuntimeActionEntries(t *testing.T) {
 // TestForwardIsTheOnlyCompositeAction 转发是唯一复合动作：固定两个写请求
 // （先建辅助实例、成功后保存附言）；其余动作都只允许一个写端点。
 func TestForwardIsTheOnlyCompositeAction(t *testing.T) {
+	expected := map[string]string{
+		"save_draft":        "/web/flowInstanceApi/submit",
+		"submit":            target.RuntimeSubmitEndpoint,
+		"storage_form_data": "/web/flowInstanceApi/storageFormData",
+		"approve":           target.RuntimeAuditEndpoint,
+		"reject":            target.RuntimeAuditEndpoint,
+		"resubmit":          target.RuntimeReSubmitEndpoint,
+	}
 	for _, action := range runtimeexec.RuntimeActionNames() {
 		entry, err := runtimeexec.EntryOf(action)
 		if err != nil {
@@ -48,6 +57,9 @@ func TestForwardIsTheOnlyCompositeAction(t *testing.T) {
 		}
 		if len(entry.WriteEndpoints) != 1 {
 			t.Fatalf("普通动作 %s 只允许一个写端点，实际 %v", action, entry.WriteEndpoints)
+		}
+		if expected[action] != "" && entry.WriteEndpoints[0] != expected[action] {
+			t.Fatalf("动作 %s 写端点应为 %s，实际 %v", action, expected[action], entry.WriteEndpoints)
 		}
 	}
 }

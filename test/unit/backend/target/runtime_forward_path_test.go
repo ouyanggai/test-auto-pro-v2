@@ -45,6 +45,8 @@ func TestForwardRuntimeRequestStripsDuplicatedGatewayPrefix(t *testing.T) {
 		{"无前缀读路径", "/web/formProxy/findById", "/api/web/formProxy/findById"},
 		// 烘焙绝对网关实例发出的带 /api 前缀路径：重复前缀必须剥掉。
 		{"带前缀写路径", "/api/web/flowInstanceApi/submit", "/api/web/flowInstanceApi/submit"},
+		// 新工作流正式提交可能以无 /api 前缀的页面相对路径到达 Go 出口。
+		{"新工作流写路径", target.RuntimeSubmitEndpoint, "/api" + target.RuntimeSubmitEndpoint},
 		// 真实以 /api 开头的目标路径：剥掉再拼回，落点不变。
 		{"真实 api 开头路径", "/api/type/list", "/api/type/list"},
 	}
@@ -133,4 +135,14 @@ func cloneValues(src url.Values) url.Values {
 		}
 	}
 	return dst
+}
+
+// TestRuntimeFlowEndpointsAreKnownWrites 锁定新工作流三个正式动作端点的写出纪律：
+// 页面请求无论是否带网关 /api 前缀，都必须被归类为已登记写请求，断线时不得误判零写入。
+func TestRuntimeFlowEndpointsAreKnownWrites(t *testing.T) {
+	for _, endpoint := range []string{target.RuntimeSubmitEndpoint, target.RuntimeReSubmitEndpoint, target.RuntimeAuditEndpoint} {
+		if !target.IsKnownWriteRequestPath(endpoint) || !target.IsKnownWriteRequestPath("/api"+endpoint) {
+			t.Fatalf("新工作流端点未登记为写请求：%s", endpoint)
+		}
+	}
 }

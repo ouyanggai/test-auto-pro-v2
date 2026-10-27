@@ -58,7 +58,7 @@ func TestForwardedRequestValidation(t *testing.T) {
 // 两侧必须同步修改，任何一侧单方面扩张都意味着绕过校验。
 func TestTargetPathPrefixesMirror(t *testing.T) {
 	joined := strings.Join(runtimeexec.TargetPathPrefixes, ",")
-	if joined != "/web/,/flowInstanceApi,/api/" {
+	if joined != "/web/,/flowInstanceApi,/newWorkflowCenter/,/api/" {
 		t.Fatalf("目标路径前缀清单变化必须与 TS 侧同步：%s", joined)
 	}
 	if !runtimeexec.IsTargetPath("/api/web/flowTemplateApi/findById") {
@@ -69,6 +69,9 @@ func TestTargetPathPrefixesMirror(t *testing.T) {
 	}
 	if !runtimeexec.IsTargetPath("/flowInstanceApi/audit") {
 		t.Fatalf("/flowInstanceApi 前缀必须命中")
+	}
+	if !runtimeexec.IsTargetPath("/newWorkflowCenter/flowInstance/submit") {
+		t.Fatalf("新工作流前缀必须命中")
 	}
 	if runtimeexec.IsTargetPath("/static/app.js") {
 		t.Fatalf("runtime 自身资源不允许被当成目标请求")

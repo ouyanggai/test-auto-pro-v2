@@ -104,7 +104,7 @@ test('二进制上传按 base64 保真', async () => {
   })
 })
 
-test('主实例 submit 在转发前恢复工具流程名并保留其它字段', async () => {
+test('正式提交在转发前恢复工具流程名并保留其它字段', async () => {
   let requestBody = ''
   await withPage(async (page, originURL) => {
     const handle = await installTargetRoute(page, {
@@ -116,12 +116,12 @@ test('主实例 submit 在转发前恢复工具流程名并保留其它字段', 
       }
     })
     await page.goto(new URL('index.html', originURL).toString(), { waitUntil: 'load' })
-    const response = await page.evaluate(`window.doFetch('${new URL('/web/flowInstanceApi/submit', originURL)}', {
+    const response = await page.evaluate(`window.doFetch('${new URL('/newWorkflowCenter/flowInstance/submit', originURL)}', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ data: { name: '页面流程名', status: 'draft', flowProxyId: 'proxy-1' } })
+      body: JSON.stringify({ data: { name: '页面流程名', flowProxyId: 'proxy-1' } })
     })`) as { status: number }
     assert.equal(response.status, 200)
-    assert.deepEqual(JSON.parse(requestBody), { data: { name: '工具流程名', status: 'draft', flowProxyId: 'proxy-1' } })
+    assert.deepEqual(JSON.parse(requestBody), { data: { name: '工具流程名', flowProxyId: 'proxy-1' } })
     await handle.uninstall()
   })
 })
@@ -187,7 +187,7 @@ test('转发主写成功前禁止发送附言', async () => {
 })
 
 test('目标路径前缀与 Go 侧允许清单镜像', () => {
-  assert.deepEqual(TARGET_PATH_PREFIXES, ['/web/', '/flowInstanceApi', '/api/', '/api'])
+  assert.deepEqual(TARGET_PATH_PREFIXES, ['/web/', '/flowInstanceApi', '/newWorkflowCenter/', '/api/', '/api'])
 })
 
 test('转发通道未连接禁止导航', () => {
