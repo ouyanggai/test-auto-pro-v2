@@ -5,6 +5,7 @@
 //   - 目标明确拒绝 → target_rejected；未发出写请求即失败 → failed；
 //   - 硬超时 → timeout，且超时后不再放行任何新写请求。
 import { RequestTraceRecorder, type TraceEntry } from './request-trace.ts'
+import { CHOICE_ERRORS } from './native-actions.ts'
 
 // FLOW_WRITE_PATHS 是流程主写端点：它们的成败决定主实例是否推进（转发的辅助实例创建同属主写）。
 // 端点真名来自 flow-source/src/api/index.js：
@@ -112,6 +113,24 @@ function parseForwardJSON (body?: string, bodyEncoding?: string): Record<string,
   } catch { return null }
 }
 
+// choiceErrorTypeFromResponse 识别目标要求继续选择的明确错误；新工作流端点可能省略 isSuccess，
+// 但只要 errorType 属于目标协议的选择错误，就必须进入既有的自动续办闭环，不能当成成功或普通完成。
+export function choiceErrorTypeFromResponse (url: string, response: { httpStatus?: number, body?: string, bodyEncoding?: string }): string | null {
+  if (!FLOW_WRITE_PATHS.some(path => url.includes(path))) return null
+  if (response.httpStatus !== undefined && response.httpStatus !== 200) return null
+  const parsed = parseForwardJSON(response.body, response.bodyEncoding)
+  if (!parsed || parsed.isSuccess === true) return null
+  const data = parsed.data as { errorType?: unknown } | undefined
+  const errorType = data?.errorType ?? parsed.errorType
+  return typeof errorType === 'string' && (CHOICE_ERRORS as readonly string[]).includes(errorType) ? errorType : null
+}
+
+// hasExplicitSuccess 只认可目标明确给出的成功标记；HTTP 200 或未知响应包络都不能单独证明业务写成功。
+function hasExplicitSuccess (entry: TraceEntry): boolean {
+  if (entry.state !== 'fulfilled' || entry.response?.httpStatus !== 200) return false
+  return parseForwardJSON(entry.response.body, entry.response.bodyEncoding)?.isSuccess === true
+}
+
 // forwardInstanceID 只从明确成功的转发响应取新实例 ID；HTTP 200 本身不能证明成功。
 export function forwardInstanceID (entry: ForwardStepEntry | undefined): string {
   if (!entry || entry.state !== 'fulfilled' || entry.response?.httpStatus !== 200) return ''
@@ -155,11 +174,11 @@ export function detectFlowRejection (entry: FlowRejectionInput): string | null {
     if (parsed && (parsed.code === 'RESP401' || parsed.code === 'AUTH_401' || parsed.message === 'SID已失效')) {
       return 'SID已失效'
     }
+    const choiceErrorType = choiceErrorTypeFromResponse(entry.url, entry.response)
+    if (choiceErrorType) {
+      return `选择要求未闭环：${parsed?.message ?? choiceErrorType}`
+    }
     if (parsed && parsed.isSuccess === false) {
-      const errorType = parsed.data && parsed.data.errorType
-      if (errorType === 'custom_choose' || errorType === 'parallel_choose' || errorType === 'run_node_choose') {
-        return `选择要求未闭环：${parsed.message ?? errorType}`
-      }
       return parsed.message ?? '目标拒绝'
     }
   } catch {
@@ -267,11 +286,11 @@ function finalize (input: CompletionInput, entries: TraceEntry[]): CompletionRes
     // isSuccess=false 要求选择，选择继续后重新提交成功）。此时早先的选择要求
     // 不是终局；其余拒绝（SID 失效、HTTP 错误、业务拒绝）仍然是终局。
     const superseded = rejection.startsWith('选择要求未闭环') &&
-      expectedEntries.some(later => later.seq > entry.seq && later.state === 'fulfilled' && later.response?.httpStatus === 200 && detectFlowRejection(later) === null)
+      expectedEntries.some(later => later.seq > entry.seq && hasExplicitSuccess(later))
     if (superseded) continue
     return { status: 'target_rejected', message: rejection, requestTrace }
   }
-  const hasExpectedSuccess = expectedEntries.some(entry => entry.state === 'fulfilled' && entry.response?.httpStatus === 200 && detectFlowRejection(entry) === null)
+  const hasExpectedSuccess = expectedEntries.some(hasExplicitSuccess)
   if (!hasExpectedSuccess) {
     return { status: 'failed', message: `期望写端点 ${expectedPath} 没有成功响应`, requestTrace }
   }

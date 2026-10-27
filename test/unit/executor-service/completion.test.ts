@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { canSendForwardStep, settleCompletion, WriteGate } from '../../../executor-service/src/completion.ts'
+import { canSendForwardStep, choiceErrorTypeFromResponse, settleCompletion, WriteGate } from '../../../executor-service/src/completion.ts'
 import { RequestTraceRecorder } from '../../../executor-service/src/request-trace.ts'
 
 type Seed = { method: string, url: string, state: 'fulfilled' | 'aborted' | 'blocked', httpStatus?: number, body?: string, requestBody?: string, writeSequence?: number }
@@ -98,6 +98,67 @@ test('选择要求未闭环时判 target_rejected', async () => {
   })
   assert.equal(verdict.status, 'target_rejected')
   assert.match(String(verdict.message), /选择要求未闭环/)
+})
+
+test('缺少明确成功标记的 HTTP 200 写响应不得冒充成功', async () => {
+  const verdict = await settleCompletion({
+    ...base,
+    action: 'approve',
+    trace: seedTrace([{ method: 'POST', url: 'https://t/api/newWorkflowCenter/flowInstance/flowAudit', state: 'fulfilled', body: encoded({ message: '响应未包含成功标记' }) }])
+  })
+  assert.equal(verdict.status, 'failed')
+  assert.match(String(verdict.message), /没有成功响应/)
+})
+
+test('新工作流端点省略 isSuccess 但返回选择错误时仍进入自动续办闭环', async () => {
+  const response = { httpStatus: 200, bodyEncoding: 'base64', body: encoded({ message: '手动条件分支,请选择', data: { errorType: 'custom_choose' } }) }
+  const endpoint = 'https://t/api/newWorkflowCenter/flowInstance/flowAudit'
+  assert.equal(choiceErrorTypeFromResponse(endpoint, response), 'custom_choose')
+  const blocked = await settleCompletion({
+    ...base,
+    action: 'approve',
+    trace: seedTrace([{ method: 'POST', url: 'https://t/api/newWorkflowCenter/flowInstance/flowAudit', state: 'fulfilled', body: response.body }])
+  })
+  assert.equal(blocked.status, 'target_rejected')
+  assert.match(String(blocked.message), /选择要求未闭环/)
+
+  const verdict = await settleCompletion({
+    ...base,
+    action: 'approve',
+    trace: seedTrace([
+      { method: 'POST', url: endpoint, state: 'fulfilled', body: response.body },
+      { method: 'POST', url: endpoint, state: 'fulfilled', body: ok() }
+    ])
+  })
+  assert.equal(verdict.status, 'success')
+})
+
+test('明确成功包络中的同名字段不触发选择续办', () => {
+  assert.equal(choiceErrorTypeFromResponse('https://t/api/newWorkflowCenter/flowInstance/flowAudit', {
+    httpStatus: 200,
+    bodyEncoding: 'base64',
+    body: encoded({ isSuccess: true, data: { errorType: 'custom_choose' } })
+  }), null)
+})
+
+test('三类明确选择错误识别不依赖 isSuccess，其他 HTTP 错误不触发续办', () => {
+  for (const errorType of ['custom_choose', 'parallel_choose', 'run_node_choose']) {
+    assert.equal(choiceErrorTypeFromResponse('https://t/api/newWorkflowCenter/flowInstance/flowAudit', {
+      httpStatus: 200,
+      bodyEncoding: 'base64',
+      body: encoded({ data: { errorType } })
+    }), errorType)
+  }
+  assert.equal(choiceErrorTypeFromResponse('https://t/api/newWorkflowCenter/flowInstance/flowAudit', {
+    httpStatus: 500,
+    bodyEncoding: 'base64',
+    body: encoded({ data: { errorType: 'custom_choose' } })
+  }), null)
+  assert.equal(choiceErrorTypeFromResponse('https://t/api/web/flowTemplateApi/list', {
+    httpStatus: 200,
+    bodyEncoding: 'base64',
+    body: encoded({ data: { errorType: 'custom_choose' } })
+  }), null)
 })
 
 test('没有写请求判 failed', async () => {

@@ -19,9 +19,9 @@ import { resolveDetailSemantics } from './native-detail.ts'
 import { UnsupportedFormError } from './data-patch.ts'
 import { synchronizeNativeForm } from './native-form-values.ts'
 import { nativeAuthQuery } from './native-runtime-auth.ts'
-import { canContinueChoice, CHOICE_ERRORS } from './native-actions.ts'
+import { canContinueChoice } from './native-actions.ts'
 import { nativeChoiceContinue, nativeDispatch, type ChoiceContinueChoice, type DispatchInput } from './native-dispatch.ts'
-import { forwardInstanceID, isPermissionCheckSubmit, settleCompletion, WriteGate } from './completion.ts'
+import { choiceErrorTypeFromResponse, forwardInstanceID, isPermissionCheckSubmit, settleCompletion, WriteGate } from './completion.ts'
 import type { Page } from 'playwright'
 import { ExecutionBaselineRecorder, describeBaselineError, type BaselineSpan } from './execution-baseline.ts'
 import { readBaselineSource } from './baseline-source.ts'
@@ -953,12 +953,12 @@ async function main (): Promise<void> {
                   parsedResponse = JSON.parse(text)
                 } catch { parsedResponse = null }
               }
-              // 选择要求识别（S6/P1-6）：流程写响应 isSuccess=false 且 errorType 属于三种选择错误时，
+              // 选择要求识别（S6/P1-6）：三种选择错误即使新端点省略 isSuccess，也必须
               // 置位 choicePending 并向 Go 发 choice_required 事件；继续命令经 choice_continue 回来。
               if (requestPayload.method === 'POST' && outcome.httpStatus === 200 && outcome.body) {
                 const parsed = parsedResponse
-                const errorType = String(parsed?.data?.errorType ?? '')
-                if (parsed && parsed.isSuccess === false && (CHOICE_ERRORS as readonly string[]).includes(errorType)) {
+                const errorType = choiceErrorTypeFromResponse(requestPayload.url, outcome)
+                if (parsed && errorType) {
                   session.choicePending = true
                   session.choicePendingAt = Date.now()
                   session.lastChoiceError = parsed as unknown as Record<string, unknown>

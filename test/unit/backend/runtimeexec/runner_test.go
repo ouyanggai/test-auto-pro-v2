@@ -191,8 +191,18 @@ func selectionRequest() runtimeexec.RuntimeRunRequest {
 func TestChoiceCustomChooseRequiresConfiguredPersonnel(t *testing.T) {
 	executor := runtimeexec.NewRuntimeExecutor(nil)
 	request := selectionRequest()
-	if choice := executor.BuildChoiceForTest(request, choiceEvent("custom_choose", "entry-1")); choice == nil {
+	choice := executor.BuildChoiceForTest(request, choiceEvent("custom_choose", "entry-1"))
+	if choice == nil {
 		t.Fatalf("自选分支已有配置人员，应允许继续")
+	}
+	if got := choice["branchEntryNodeProxyIds"].([]string); len(got) != 1 || got[0] != "entry-1" {
+		t.Fatalf("继续载荷必须只携带已保存且与目标候选精确匹配的分支入口：%+v", got)
+	}
+	if got := choice["nextAuditors"].([]runtimeexec.NextAuditorEntry); len(got) != 1 || got[0].NodeProxyID != "entry-1" || got[0].BizID != "biz-1" {
+		t.Fatalf("分支自选审批人必须绑定到目标返回的入口节点：%+v", got)
+	}
+	if unmatched := executor.BuildChoiceForTest(request, choiceEvent("custom_choose", "another-entry")); unmatched != nil {
+		t.Fatalf("目标返回的候选与已保存选择不匹配时必须阻塞且不猜测：%+v", unmatched)
 	}
 	request.NextNodeAuditors = nil
 	if choice := executor.BuildChoiceForTest(request, choiceEvent("custom_choose", "entry-1")); choice != nil {
