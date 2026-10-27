@@ -10,6 +10,7 @@
 
 # 前端依赖、缓存与构建产物
 /node_modules/
+**/node_modules/
 /web/node_modules/
 /web/dist/
 /web/.vite/
