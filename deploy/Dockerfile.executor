@@ -9,9 +9,10 @@ COPY executor-service/package.json ./executor-service/package.json
 RUN pnpm install --frozen-lockfile --filter test-auto-pro-v2-executor-service
 COPY executor-service ./executor-service
 # 长连接下载曾中断；保留已校验的 npm 缓存并有限重试，失败仍阻止发布切换。
+# 上游 Webpack 4 在 Node 22 下使用 OpenSSL 3 禁用的旧 hash，仅为本镜像构建进程启用兼容 provider。
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     for attempt in 1 2 3; do \
-      npm_config_fetch_retries=5 pnpm --dir executor-service build-native-page && exit 0; \
+      NODE_OPTIONS=--openssl-legacy-provider npm_config_fetch_retries=5 pnpm --dir executor-service build-native-page && exit 0; \
       [ "$attempt" != 3 ] || exit 1; \
       sleep 5; \
     done
