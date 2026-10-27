@@ -370,6 +370,9 @@ func (o *PnpmOperator) Restart(ctx context.Context, candidate, previous string, 
 	}
 	if err := o.deploy(ctx, candidate); err == nil {
 		if healthErr := o.health.Check(ctx, o.liveDir, o.healthURL); healthErr == nil {
+			if pruneErr := o.pruneLiveBuild(candidate); pruneErr != nil {
+				return o.rollback(ctx, previous, fmt.Errorf("清理旧表单资源失败: %w", pruneErr), output)
+			}
 			return nil
 		} else {
 			err = fmt.Errorf("候选切换后 HTTP 健康检查失败: %w", healthErr)
@@ -394,7 +397,7 @@ func (o *PnpmOperator) Verify(ctx context.Context, candidate, previous string, o
 	return o.rollback(ctx, previous, fmt.Errorf("最终 HTTP 健康检查失败: %w", err), output)
 }
 
-// deploy 原子替换 live 源码和产物；任一步失败都恢复替换前现场。
+// deploy 切换 live 源码和产物；产物挂载点不能重命名，因此在挂载点内按资源、入口、健康的顺序切换。
 func (o *PnpmOperator) deploy(ctx context.Context, version string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -407,47 +410,124 @@ func (o *PnpmOperator) deploy(ctx context.Context, version string) error {
 	if _, err := readRuntimeSourceMetadata(runtimeSource); err != nil {
 		return err
 	}
-	nextBuild, previousBuild := o.liveDir+".candidate", o.liveDir+".previous"
 	nextSource, previousSource := o.liveSourceDir+".candidate", o.liveSourceDir+".previous"
-	for _, directory := range []string{nextBuild, previousBuild, nextSource, previousSource} {
+	for _, directory := range []string{nextSource, previousSource} {
 		if err := os.RemoveAll(directory); err != nil {
 			return err
 		}
 	}
-	if err := copyDirectory(buildSource, nextBuild); err != nil {
-		return err
-	}
 	if err := copyDirectory(runtimeSource, nextSource); err != nil {
-		_ = os.RemoveAll(nextBuild)
 		return err
 	}
-	if err := moveIfPresent(o.liveDir, previousBuild); err != nil {
+	if err := o.publishBuildInPlace(buildSource, version); err != nil {
+		_ = os.RemoveAll(nextSource)
 		return err
 	}
 	if err := moveIfPresent(o.liveSourceDir, previousSource); err != nil {
-		_ = restoreMoved(previousBuild, o.liveDir)
-		return err
-	}
-	if err := os.Rename(nextBuild, o.liveDir); err != nil {
-		_ = restoreMoved(previousSource, o.liveSourceDir)
-		_ = restoreMoved(previousBuild, o.liveDir)
 		return err
 	}
 	if err := os.Rename(nextSource, o.liveSourceDir); err != nil {
-		_ = os.RemoveAll(o.liveDir)
-		_ = restoreMoved(previousSource, o.liveSourceDir)
-		_ = restoreMoved(previousBuild, o.liveDir)
 		return err
 	}
 	if err := o.writeState(version); err != nil {
-		_ = os.RemoveAll(o.liveDir)
-		_ = os.RemoveAll(o.liveSourceDir)
-		_ = restoreMoved(previousSource, o.liveSourceDir)
-		_ = restoreMoved(previousBuild, o.liveDir)
 		return err
 	}
-	_ = os.RemoveAll(previousBuild)
+	if err := o.removeMaintenanceScratch(); err != nil {
+		return err
+	}
 	_ = os.RemoveAll(previousSource)
+	return nil
+}
+
+// publishBuildInPlace 在不能重命名的 live 卷挂载点内切换构建产物。
+// 先复制到同卷隐藏目录，再替换资源、入口和健康标记；健康标记最后生效，失败由调用方回滚 previous。
+func (o *PnpmOperator) publishBuildInPlace(buildSource, version string) error {
+	stage := filepath.Join(o.liveDir, ".maintenance-stage-"+version)
+	backup := filepath.Join(o.liveDir, ".maintenance-backup-"+version)
+	if err := os.RemoveAll(stage); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(backup); err != nil {
+		return err
+	}
+	if err := copyDirectory(buildSource, stage); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(buildSource)
+	if err != nil {
+		return err
+	}
+	sort.Slice(entries, func(left, right int) bool {
+		if entries[left].Name() == "runtime-health.json" {
+			return false
+		}
+		if entries[right].Name() == "runtime-health.json" {
+			return true
+		}
+		return entries[left].Name() < entries[right].Name()
+	})
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		liveTarget := filepath.Join(o.liveDir, name)
+		backupTarget := filepath.Join(backup, name)
+		if _, err := os.Lstat(liveTarget); err == nil {
+			if err := os.Rename(liveTarget, backupTarget); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.Rename(filepath.Join(stage, name), liveTarget); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pruneLiveBuild 在 HTTP 已确认候选生效后删除不在候选里的顶层旧资源，避免 live 卷跨版本无限膨胀。
+func (o *PnpmOperator) pruneLiveBuild(version string) error {
+	buildSource := o.versionDir(version)
+	current := make(map[string]bool)
+	entries, err := os.ReadDir(buildSource)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		current[entry.Name()] = true
+	}
+	liveEntries, err := os.ReadDir(o.liveDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range liveEntries {
+		name := entry.Name()
+		if current[name] || strings.HasPrefix(name, ".maintenance-stage-") || strings.HasPrefix(name, ".maintenance-backup-") {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(o.liveDir, name)); err != nil {
+			return err
+		}
+	}
+	return o.removeMaintenanceScratch()
+}
+
+// removeMaintenanceScratch 清理本算子生成的同卷切换临时目录。
+func (o *PnpmOperator) removeMaintenanceScratch() error {
+	entries, err := os.ReadDir(o.liveDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, ".maintenance-stage-") || strings.HasPrefix(name, ".maintenance-backup-") {
+			if err := os.RemoveAll(filepath.Join(o.liveDir, name)); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
