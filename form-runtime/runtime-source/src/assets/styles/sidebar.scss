@@ -17,7 +17,8 @@
   .sidebar-container {
     transition: width 0.28s;
     width: $sideBarWidth  !important;
-    background-color: $menuBg;
+    background-color: var(--nav-bg);
+    border-right: 1px solid var(--nav-border);
     height: 100%;
     position: fixed;
     font-size: 0px;
@@ -46,6 +47,8 @@
 
     &.has-logo {
       .el-scrollbar {
+        // 减去 50px Logo 条。全局 box-sizing 为 border-box，
+        // Logo 条的 1px 底边算在自身高度内，这里不需要再多减
         height: calc(100% - 50px);
       }
     }
@@ -75,25 +78,215 @@
       width: 100% !important;
     }
 
-    // menu hover
-    .submenu-title-noDropdown,
+    // 菜单项：统一行高，做成内嵌圆角高亮块。
+    // element-ui 会给菜单项打行内 background-color/color，故覆盖处仍需 !important。
+    .el-menu-item,
     .el-submenu__title {
-      &:hover {
-        background-color: $menuHover  !important;
+      position: relative; // 让折叠箭头/折叠态内容层以菜单项为参照
+      height: 50px;
+      line-height: 50px;
+      margin: 2px 8px;
+      width: calc(100% - 16px);
+      min-width: 0  !important;
+      // 缩进由 element-ui 的行内 padding-left 决定（20px/层），这里只收窄右侧留白
+      padding-right: 14px;
+      border-radius: 6px;
+      box-sizing: border-box;
+      transition: background-color 0.2s, color 0.2s;
+      // 一级文字色。element-ui 本来是从 el-menu 的 text-color prop 行内下发的，
+      // 这里显式写一遍：那个 prop 现在走 :export 的 var() 字符串，不依赖它更稳，
+      // 整套配色也就完全由 CSS 驱动了。下面二级/三级和选中态都多叠了类，压得住这条。
+      color: var(--nav-text)  !important;
+    }
+
+    .el-submenu__icon-arrow {
+      right: 14px;
+    }
+
+    // 把 element-ui 自己写的那几处行内底色压回透明。
+    // 它的 menu.vue / submenu.vue 会给 .el-menu、.el-menu-item、.el-submenu__title
+    // 和嵌套 <ul> 都打上 background-color。这些值来自 el-menu 的 background-color
+    // prop，虽然那个 prop 现在吐的是 var(--nav-bg)（见 variables.scss 的 :export），
+    // 能跟着主题走，但菜单项要的是「透出侧栏底」而不是「再刷一层同色」——
+    // 刷一层的话，将来给侧栏加渐变或纹理就会被盖住，所以统一按透明处理。
+    // 短胶囊这套本来就不给子项底色（见下方二级/三级规则），这条正好是它的基调。
+    // 下面的 hover、选中规则都排在后面且带 !important，不受影响。
+    .el-menu-item,
+    .el-submenu__title,
+    .el-submenu>.el-menu {
+      background-color: transparent  !important;
+    }
+
+    // ── 二级菜单：短胶囊 ──────────────────────────────────────────────
+    // 出自 Windows 11 Fluent 的 NavigationView。它的做法和「整行填实心色」那套正好相反：
+    // 子项一律不带自己的底色，行的四角收成 6px 圆角，整套的层级感只由两样东西给 ——
+    //   1. 缩进（块和内容各让一档，见下）
+    //   2. 选中项在行内左侧贴一条「短、两端圆角」的胶囊
+    // 官方把这条胶囊明确定位为「取代整行实心填色」的选中表达（fluent_ui#1181）。
+    // 所以选中的子项身上只有两样东西：一层 20% 的淡填充（--nav-active-fill，
+    // 不是实心主色那种一眼就跳出来的块），加那条胶囊。
+    //
+    // 层级仍然靠缩进区分，缩进拆成两半：margin 抬「块」，padding 抬「内容」，
+    // 两者之和固定 48px（二级）/ 68px（三级）—— 图标位置锁死，
+    // 内外层一眼能看出从属，换配色时内容也不会跳。
+    //
+    // width 必须一起放开成 auto —— 基础规则里写的是 calc(100% - 16px)，
+    // 外缩进加了而宽度不减，右边会顶出侧栏（侧栏是 overflow:hidden，会直接切掉）。
+    // 放开成 auto 之后 二级块 26..202、三级块 42..202，右缘与一级块的 202 对齐。
+    //
+    // 后一个选择器要用「.el-submenu 里再套 .el-submenu」+ 子选择器来锁定二级折叠项：
+    // 写成 .el-submenu .el-submenu__title 的话，靠后代关系会把一级自己的标题也一起命中
+    .el-submenu .el-menu-item,
+    .el-submenu .el-submenu>.el-submenu__title {
+      margin-left: 26px;
+      margin-right: 8px;
+      width: auto;
+      height: 36px;
+      line-height: 36px;
+      font-size: 13px;
+      font-weight: 400;
+      border-radius: 6px;
+      // 行内 padding-left 由 element 下发（二级 40px），这里压到 22px：
+      // 26px 外缩进 + 22px 内缩进 = 图标落在 48px，比一级的 28px 进两格
+      padding-left: 22px  !important;
+      // el-menu 通过 text-color 给所有菜单项下发的是二级文字色，这里要压回去
+      color: var(--nav-text-sub)  !important;
+
+      // 层级越深，横向越金贵：二级往下图标离文字近一点，把空间还给文字
+      .svg-icon,
+      .sub-el-icon {
+        margin-right: 10px;
       }
     }
 
-    .is-active>.el-submenu__title {
-      color: $subMenuActiveText  !important;
+    // 三级（孙级）再收一档：块 42px、图标 68px、32px 高、12px 字。
+    // 上面那条二级规则用的是后代选择器（.el-submenu .el-menu-item），孙级项同样落进去，
+    // 结果子级和孙级长得一模一样，只差 20px 缩进 —— 这就是「区分不明显」的原因。
+    // 这里多叠一层 .el-submenu 把优先级提上去，孙级才真正比子级再退一档。
+    // margin-right / width / border-radius 沿用上面二级那条，不再重复声明。
+    .el-submenu .el-submenu .el-menu-item,
+    .el-submenu .el-submenu .el-submenu>.el-submenu__title {
+      margin-left: 42px;
+      padding-left: 26px  !important;
+      height: 32px;
+      line-height: 32px;
+      font-size: 12px;
+      font-weight: 400;
+      color: var(--nav-text-sub2)  !important;
     }
 
-    & .nest-menu .el-submenu>.el-submenu__title,
-    & .el-submenu .el-menu-item {
-      min-width: $sideBarWidth  !important;
-      background-color: $subMenuBg  !important;
+    // 展开中的父项整行常亮一层极淡底 —— Fluent 用它表示「这一支是开着的」，
+    // 因为子项自己没有底色，不给父项这层提示的话展开和收起在视觉上没有区别。
+    //
+    // 位置很关键：它和更下面的 is-active 同分（都是 140），只能靠顺序分胜负 ——
+    // 子项选中时父项要给的是「这一支里有选中项」的蓝调，不是这层中性的白调，
+    // 所以这条必须排在 is-active 前面。
+    // 和 hover 的关系不用靠顺序：它比一级标题那条 :hover 多一个类（140 vs 130），
+    // 稳赢；而嵌套标题那条 :hover 多一层 .nest-menu（150），反过来稳赢它 ——
+    // 鼠标划过子级的父项仍然会亮起来。
+    .el-submenu.is-opened>.el-submenu__title {
+      background-color: var(--nav-hover-soft)  !important;
+      color: var(--nav-text)  !important;
+    }
 
+    .submenu-title-noDropdown,
+    .el-submenu__title {
       &:hover {
-        background-color: $subMenuHover  !important;
+        background-color: var(--nav-hover)  !important;
+        // 悬停的文字色和底色是一对，两个都走 token 才能一起换
+        color: var(--nav-text-hover)  !important;
+      }
+    }
+
+    // 子项悬停：一层极淡的白色浮起（--nav-hover-soft），文字转纯白。
+    // 不用 --nav-hover-sub 那种带蓝的实色 —— 短胶囊整套的底色都是「透出侧栏底」，
+    // 突然刷一块明显的蓝会打破它，也和选中胶囊抢注意力。
+    & .nest-menu .el-submenu>.el-submenu__title:hover,
+    & .el-submenu .el-menu-item:hover {
+      background-color: var(--nav-hover-soft)  !important;
+      color: var(--nav-text-hover)  !important;
+    }
+
+    // 一级叶子项悬停。这条是补回来的：element-ui 的一级叶子项本来不靠 CSS，
+    // 而是 onMouseEnter 时往行内写一个 hover 色（menu-item.vue:88，
+    // 值是 mixColor(background-color, 0.2) 现算的）。但 background-color 这个 prop
+    // 现在吐的是 var(--nav-bg) 字符串，mixColor 解析不出颜色；就算解析得出来，
+    // 也会被上面那条 transparent !important 压掉。父项标题和子项都另有 hover 规则，
+    // 只有一级叶子项两边不靠，所以显式补一条。
+    // 用 --nav-hover（一级的实色）而不是子项那层 --nav-hover-soft：一级的父项标题
+    // 悬停就是这个色，两者挨着排，得一致。
+    // 位置在选中规则之前：选中项悬停时保持选中样，不要被 hover 抢走。
+    .el-menu-item:hover {
+      background-color: var(--nav-hover)  !important;
+      color: var(--nav-text-hover)  !important;
+    }
+
+    // 选中态：一层淡填充 + 文字转高亮色 + 左侧一条指示器。用伪元素而不用
+    // border-left，因为伪元素不受 element-ui 行内样式影响，最可靠。
+    //
+    // 指示器一级和二级/三级的形不同，是刻意的：
+    //   一级     —— 块左缘一条 3×18 的渐变竖条，贴边，只有右侧两角圆
+    //   二级/三级 —— 行内左侧 7px 处一条 3×16 的短胶囊，两端全圆角，实色
+    // 一级的项目少、块也宽，贴边的竖条够醒目；子项块窄、行间距密，贴边竖条
+    // 会被看成列表分割线，所以退到行内 7px，做成一颗独立的小胶囊 ——
+    // 这就是「短胶囊」那套的核心记号（见上方二级菜单注释）。
+    //
+    // 文字色单独拆一条：二级/三级各自那条 color 规则(带 !important)优先于
+    // 下面这条光秃秃的 .el-menu-item.is-active，所以逐级多叠一层类把它们压住。
+    .el-menu-item.is-active,
+    .el-submenu .el-menu-item.is-active,
+    .el-submenu .el-submenu .el-menu-item.is-active {
+      color: var(--nav-active-text)  !important;
+    }
+
+    .el-menu-item.is-active {
+      background-color: var(--nav-active-fill)  !important;
+      font-weight: 600;
+
+      &::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 3px;
+        height: 18px;
+        border-radius: 0 3px 3px 0;
+        background: var(--nav-active-bar);
+      }
+    }
+
+    // 二级/三级的选中态。底的填充和字重要在这里再写一遍：
+    // 上面那条三级几何规则多叠了一层 .el-submenu，比 .el-menu-item.is-active 具体，
+    // 不重写的话选中行会被它那条 transparent 和 font-weight: 400 盖掉。
+    // （二级那条同分，靠顺序本来就能赢，仍然一起写上，免得以后调整顺序时踩空。）
+    // color 不用重写，上面那条逐级叠类的 color 规则已经赢了。
+    .el-submenu .el-menu-item.is-active,
+    .el-submenu .el-submenu .el-menu-item.is-active {
+      background-color: var(--nav-active-fill)  !important;
+      font-weight: 600;
+
+      // 短胶囊：卡在行内左侧 7px（不贴边），3×16，两端全圆角，用实色
+      // --nav-active-text 而不是一级那条渐变 —— 短胶囊要的是「一颗点」，
+      // 不是「一道边」。
+      // position / top / transform 沿用上面那条，这里只改形和色
+      &::before {
+        left: 7px;
+        width: 3px;
+        height: 16px;
+        border-radius: 999px;
+        background: var(--nav-active-text);
+      }
+    }
+
+    // 父级折叠项：子项选中时只做弱高亮，避免和子项抢视觉
+    .el-submenu.is-active>.el-submenu__title {
+      background-color: var(--nav-active-fill-weak)  !important;
+      color: var(--nav-active-text)  !important;
+
+      // 选中态父项优先级高于普通 hover，需单独补回悬停反馈
+      &:hover {
+        background-color: var(--nav-hover)  !important;
       }
     }
   }
@@ -104,27 +297,62 @@
     }
 
     .main-container {
-      margin-left: 54px;
+      // 侧栏折叠宽 60px（见上方 .sidebar-container），内容区须让开同样宽度，
+      // 原先写 54px 会被侧栏压住 6px
+      margin-left: 60px;
     }
 
     .main-container-isBidBoard {
       margin-left: 0px;
     }
 
-    .submenu-title-noDropdown {
-      padding: 0 !important;
-      position: relative;
+    // 折叠态：菜单项退化为纯图标，用 flex 居中替代原先写死的 margin-left。
+    // 展开态给菜单项加的 margin/width 在这里要还原，否则 60px 轨道内放不下。
+    //
+    // 这里不能依赖 element-ui 自带的折叠规则。它用的是子选择器：
+    //   .el-menu--collapse > .el-menu-item span { width:0; height:0; visibility:hidden }
+    // 但叶子菜单在 SidebarItem.vue 里隔着 app-link（渲染成 router-link → <a>）：
+    //   <ul class="el-menu--collapse">
+    //     <a><li class="el-menu-item">…</li></a>   ← 不是 ul 的直接子节点，规则落空
+    //     <li class="el-submenu"><div class="el-submenu__title">…</div></li>  ← 能命中
+    // 结果叶子菜单的标题 span 没被收掉，撑满轨道后把图标挤到左边裁掉，
+    // 而 submenu 的图标正常居中——「有的偏左有的居中」就是这么来的。
+    // 所以改用后代选择器自己收标题，两种结构一起覆盖。
+    // 这里的 margin/width 和 padding 一样必须 !important：
+    // 上面给二三级菜单加的 margin-left/width:auto 优先级更高（多一层 .el-submenu），
+    // 不加就会被它们顶掉，折叠后图标又被推到左边
+    .el-menu-item,
+    .el-submenu>.el-submenu__title {
+      margin: 2px 0  !important;
+      width: 100% !important;
+      padding: 0 !important; // el-menu-item 带行内 padding，必须压掉
+      display: flex;
+      align-items: center;
+      justify-content: center;
 
-      .el-tooltip {
+      // 标题文字整体退出布局。submenu 折叠后的弹出菜单靠 popper-append-to-body
+      // 挂在 body 上，不在 .hideSidebar 范围内，不会被这条误伤
+      span {
+        display: none  !important;
+      }
+
+      // 兜底：若某条路径下 element-ui 把内容裹进那个行内样式的定位层
+      // （display:inline-block; padding:0 20px），行内样式优先级高于普通声明，逐条压
+      >div {
+        display: flex  !important;
+        align-items: center  !important;
+        justify-content: center  !important;
+        width: 100% !important;
+        height: 100% !important;
         padding: 0 !important;
+      }
 
-        .svg-icon {
-          margin-left: 20px;
-        }
-
-        .sub-el-icon {
-          margin-left: 19px;
-        }
+      // 图标清零外边距（展开态靠 margin-right:16px 顶开文字），
+      // 并禁止被压缩，保证在 60px 轨道里始终居中不动
+      .svg-icon,
+      .sub-el-icon {
+        margin: 0  !important;
+        flex-shrink: 0;
       }
     }
 
@@ -132,16 +360,6 @@
       overflow: hidden;
 
       &>.el-submenu__title {
-        padding: 0 !important;
-
-        .svg-icon {
-          margin-left: 20px;
-        }
-
-        .sub-el-icon {
-          margin-left: 19px;
-        }
-
         .el-submenu__icon-arrow {
           display: none;
         }
@@ -212,27 +430,125 @@
   .nest-menu .el-submenu>.el-submenu__title,
   .el-menu-item {
     &:hover {
-      // you can use $subMenuHover
-      background-color: $menuHover  !important;
+      // you can use var(--nav-hover-sub)
+      background-color: var(--nav-hover)  !important;
     }
   }
 
-  // the scroll bar appears when the subMenu is too long
+  // 折叠后从图标右侧弹出的二级菜单。SidebarItem 给 el-submenu 设了
+  // popper-append-to-body，所以它是挂在 body 上的，作用域只能挂在 .el-menu--vertical，
+  // 进不了 .sidebar-container。
+  // 弹层 ul 的底色由 element 用行内 style 下发（Background: rootMenu.backgroundColor），
+  // 正好就是侧栏的 var(--nav-bg)，这里不用管；改的是 element 自带那套浅色弹层的圆角/描边/阴影。
   >.el-menu--popup {
+    min-width: 160px;
+    padding: 6px;
+    border-radius: 10px;
+    border: 1px solid var(--nav-border);
+    box-shadow: 0 10px 28px var(--nav-popup-shadow);
     max-height: 100vh;
     overflow-y: auto;
 
-    &::-webkit-scrollbar-track-piece {
-      background: #d3dce6;
+    .el-menu-item {
+      height: 40px;
+      line-height: 40px;
+      width: 100%;
+      margin: 0;
+      // element 给嵌套菜单项下发的是行内 padding: 0 20px
+      padding: 0 14px  !important;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 400;
+      // 文字色是 element 在 itemStyle 里按 active 状态行内下发的，必须 !important
+      color: var(--nav-text)  !important;
+
+      .svg-icon,
+      .sub-el-icon {
+        width: 16px;
+        height: 16px;
+        margin-right: 8px;
+      }
+
+      &:hover {
+        background-color: var(--nav-hover)  !important;
+        color: #fff  !important;
+      }
+
+      &.is-active {
+        background-color: var(--nav-active-fill)  !important;
+        color: var(--nav-active-text)  !important;
+        font-weight: 600;
+      }
     }
 
+    // 滚动条原来是给浅色底配的浅灰（#d3dce6 / #99a9bf），在深蓝弹层上很扎眼
     &::-webkit-scrollbar {
       width: 6px;
     }
 
+    &::-webkit-scrollbar-track-piece {
+      background: transparent;
+    }
+
     &::-webkit-scrollbar-thumb {
-      background: #99a9bf;
+      background: var(--nav-scroll-thumb);
       border-radius: 20px;
+
+      &:hover {
+        background: var(--nav-scroll-thumb-hover);
+      }
+    }
+  }
+}
+
+// 折叠态 hover 图标时的提示框。element 默认是 #303133 的深灰直角方块 + 同色小三角，
+// 摆在这套深蓝导航上像贴了块补丁，这里换成同色系深蓝 + 圆角。
+// el-menu-item 里的 tooltip 没有开 append-to-body，popper 仍挂在 <li> 内，
+// 所以用 .sidebar-container 限定作用域，不会波及其它页面的 tooltip。
+.sidebar-container {
+  .el-tooltip__popper.is-dark {
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    background: var(--nav-bg);
+    // element 给 is-dark 写死的文字色是 #fff，而这里的底色取的是 --nav-bg；
+    // 两边都走 token 才能保证任何时候都是「深底浅字」，不会撞成白字白底
+    color: var(--nav-top-text);
+    box-shadow: 0 8px 22px var(--nav-popup-shadow);
+
+    // 小三角的两种颜色都写死在 element 的基础规则里（.popper__arrow 用
+    // $--tooltip-border-color、::after 用 $--tooltip-fill，默认都是 #303133），
+    // 只改底色的话箭头会露出一截灰，得跟着一起改
+    &[x-placement^="right"] .popper__arrow {
+      border-right-color: var(--nav-bg);
+
+      &::after {
+        border-right-color: var(--nav-bg);
+      }
+    }
+
+    &[x-placement^="left"] .popper__arrow {
+      border-left-color: var(--nav-bg);
+
+      &::after {
+        border-left-color: var(--nav-bg);
+      }
+    }
+
+    &[x-placement^="top"] .popper__arrow {
+      border-top-color: var(--nav-bg);
+
+      &::after {
+        border-top-color: var(--nav-bg);
+      }
+    }
+
+    &[x-placement^="bottom"] .popper__arrow {
+      border-bottom-color: var(--nav-bg);
+
+      &::after {
+        border-bottom-color: var(--nav-bg);
+      }
     }
   }
 }

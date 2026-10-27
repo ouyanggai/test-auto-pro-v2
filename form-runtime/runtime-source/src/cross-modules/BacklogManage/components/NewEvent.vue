@@ -42,8 +42,21 @@
       <el-form-item prop="content" label="内容:">
         <!-- <div style="width:100%"> -->
         <!-- 富文本编辑器 -->
-        <div v-show="type == 'edit'" v-html="form.content"></div>
+        <div
+          v-show="type == 'edit'"
+          ref="richContentPreview"
+          class="rich-content-preview"
+          v-html="form.content"
+          @click="previewRichContentImage"
+        ></div>
         <RichEditor v-show="type == 'add'" ref="richEditorRef"></RichEditor>
+        <el-image
+          v-show="false"
+          ref="richContentImageViewer"
+          :src="richContentPreviewUrl"
+          :preview-src-list="richContentPreviewList"
+          :z-index="100000"
+        ></el-image>
         <!-- <div v-show="isPrintPage" v-html="form.content"></div>
         <RichEditor v-show="!isPrintPage" ref="richEditorRef"></RichEditor> -->
       </el-form-item>
@@ -155,6 +168,8 @@ export default {
   data() {
     return {
       editFlowVisible:false,
+      richContentPreviewUrl: '',
+      richContentPreviewList: [],
       form: {
         name: '',
         fileList: [],
@@ -239,6 +254,26 @@ export default {
   mounted() {
   },
   methods: {
+    previewRichContentImage(event) {
+      const targetImage = event.target && event.target.closest
+        ? event.target.closest('img')
+        : null;
+      if (!targetImage || !event.currentTarget.contains(targetImage)) return;
+
+      const images = Array.from(event.currentTarget.querySelectorAll('img'))
+        .filter(image => image.currentSrc || image.getAttribute('src'));
+      this.richContentPreviewList = images.map(image =>
+        image.currentSrc || image.getAttribute('src') || image.src
+      );
+      this.richContentPreviewUrl = targetImage.currentSrc ||
+        targetImage.getAttribute('src') || targetImage.src;
+
+      this.$nextTick(() => {
+        if (this.$refs.richContentImageViewer) {
+          this.$refs.richContentImageViewer.showViewer = true;
+        }
+      });
+    },
     // ========复用其他人的无表单打印-开始=============
     async printPage(list) {
       this.printList = list
@@ -636,6 +671,11 @@ export default {
 
   ::v-deep .my-eidtor {
     min-height:500px !important;
+  }
+
+  ::v-deep .rich-content-preview img {
+    max-width: 100%;
+    cursor: zoom-in;
   }
 
 </style>

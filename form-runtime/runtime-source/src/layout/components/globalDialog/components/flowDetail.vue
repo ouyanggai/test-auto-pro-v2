@@ -77,6 +77,7 @@
       :flowInstanceId="flowInstanceId"
       :flowId="flowId"
       :initiatorId="initiatorId"
+      :isDraft="isDraft"
     ></CheckFlowNodeDetail>
   </div>
 </template>
@@ -135,6 +136,7 @@ export default {
       currentRowFlowData: {},
       checkViewFlowDetailVisible: false,
       isReInitiate: false,
+      isDraft: false,
       btnVisible: false,
       flowTemplateVisible: false,
       approveDialogVisible: false,
@@ -291,6 +293,8 @@ export default {
       this.flowId = row.flowProxyId;
       this.flowInstanceId = row.flowInstanceId || row.id;
       this.initiatorId = row.createrId || row.initiatorId;
+      // 撤销流程沿用模板平台的草稿态流程图，不展示历史节点的已发送/已审批标记。
+      this.isDraft = ['withdraw', 'withdrawn'].includes(String(row.flowStatus || row.status || '').toLowerCase());
       this.checkViewFlowDetailVisible = true;
     },
     handleView() {

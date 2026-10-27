@@ -144,6 +144,8 @@ export default {
         },
       ],
       selectData:[],
+      preSelectedIds: [],    // 已关联的流程ID列表，用于预选checkbox
+      _tableDataUnwatch: null, // tableData watcher 清理函数
 
       activeName: 'backlog',
     };
@@ -172,6 +174,12 @@ export default {
     // "pagination.size": async function(newVal, oldVal){
     //   this.myFlowList = await this.getList();
     // }
+    // 弹框关闭时清除预选ID，避免下次打开时残留
+    visible(val) {
+      if (!val) {
+        this.preSelectedIds = [];
+      }
+    }
   },
   created() {
   },
@@ -185,17 +193,77 @@ export default {
     // },
     handleClick() {
       this.searchForm.name = '';
-      // this.initiator = '';
-      // this.flowName = '';
-      // this.dateVal = '';
-      // this.flowStatus = '';
-      // this.flowInstanceName = ''
+      this.selectData = []; // 清除旧tab的勾选数据，避免残留
+      // 等待新tab组件渲染完成后再预选（v-if 会销毁重建组件）
+      this.$nextTick(() => {
+        this.applyPreSelection();
+      });
     },
     selectDataEvent(data){
       this.selectData = data
     },
     handleClose() {
+      this.clearAllSelections();
       this.$emit('update:visible', false);
+    },
+    // 供父组件调用，设置已关联的流程ID并触发预选
+    setPreSelectedIds(ids) {
+      this.preSelectedIds = ids || [];
+      if (this.preSelectedIds.length) {
+        this.applyPreSelection();
+      }
+    },
+    // 清除所有tab表格中的勾选状态
+    clearAllSelections() {
+      this._unwatchTableData();
+      this.selectData = [];
+      const tabs = ['backlog', 'finished', 'submitted'];
+      tabs.forEach(tab => {
+        const tabRef = this.$refs[tab];
+        if (tabRef && tabRef.$refs.dytable) {
+          tabRef.$refs.dytable.handleClearSelection();
+        }
+      });
+    },
+    // 清理 tableData watcher
+    _unwatchTableData() {
+      if (this._tableDataUnwatch) {
+        this._tableDataUnwatch();
+        this._tableDataUnwatch = null;
+      }
+    },
+    // 执行预选：遍历当前页匹配行并勾选
+    _doPreSelect(activeTab) {
+      const dytable = activeTab.$refs.dytable;
+      activeTab.tableData.forEach(row => {
+        const rowId = row.flowInstanceId || row.id;
+        if (this.preSelectedIds.includes(rowId)) {
+          dytable.handleToggleRowSelection(row);
+        }
+      });
+    },
+    // 在当前active的tab表格中预选已关联的流程。
+    // 数据已加载则立即预选；未加载则 watch tableData，数据一到即触发，无轮询开销。
+    applyPreSelection() {
+      if (!this.visible || !this.preSelectedIds.length) return;
+
+      this._unwatchTableData();
+
+      const activeTab = this.$refs[this.activeName];
+      if (!activeTab || !activeTab.$refs.dytable) return;
+
+      if ((activeTab.tableData || []).length) {
+        // 数据已就绪，直接预选
+        this._doPreSelect(activeTab);
+      } else {
+        // 数据尚未返回，watch tableData 变化，一次性触发
+        this._tableDataUnwatch = activeTab.$watch('tableData', (newVal) => {
+          if (newVal && newVal.length) {
+            this._doPreSelect(activeTab);
+            this._unwatchTableData();
+          }
+        });
+      }
     },
     toggleSelection(arr) {
       if (arr) {

@@ -6,15 +6,19 @@
 <template>
   <el-dialog
     :visible="visible"
-    title="选择人员"
+    :title="selectionPrompt ? '选择抄送人' : '选择人员'"
     :close-on-click-modal="false"
     :destroy-on-close="false"
     width="900px"
     @close='handleClose(true)'
     append-to-body
-    top="100px"
+    top="5vh"
     custom-class="select-person-dialog"
   >
+    <div v-if="selectionPrompt" class="selection-prompt">
+      <i class="el-icon-info"></i>
+      {{ selectionPrompt }}
+    </div>
     <div v-if="isProject" :key="1">
       <el-checkbox-group v-model="checkboxList">
         <el-checkbox v-for="data in treeData" :label="data.id" :key="data.id">
@@ -119,6 +123,10 @@ export default {
       default: function(){
         return [];
       }
+    },
+    selectionPrompt: {
+      type: String,
+      default: ''
     }
   },
   data() {
@@ -243,6 +251,10 @@ export default {
             return data;
           }
         });
+        if (this.selectionPrompt && !checkboxList.length) {
+          this.$message.error(this.selectionPrompt);
+          return;
+        }
 
         if (this.nodeAuditType == 'countersign') {
           if (!(checkboxList.length > this.countersignNum || checkboxList.length == this.countersignNum)) {
@@ -260,7 +272,7 @@ export default {
         //   checkboxPersonGroup: personList
         // });
         const personList = this.personList.filter(x => x.type == 5);
-        if(!personList.length)return this.$message.error('请选择审核人员')
+        if(!personList.length)return this.$message.error(this.selectionPrompt || '请选择审核人员')
 
         if (this.nodeAuditType == 'countersign') {
           if (!(personList.length > this.countersignNum || personList.length == this.countersignNum)) {
@@ -381,38 +393,80 @@ export default {
 </script>
 
 <style scoped lang="scss">
-// ::v-deep .el-dialog__body {
-//   max-height: 600px;
-// }
+// 选择人员穿梭框：固定 dialog body 高度 + flex 填满，左右同高（第一版自适应）
 ::v-deep {
+  .selection-prompt {
+    padding: 10px 15px;
+    color: #606266;
+    background: #f4f8ff;
+    border-bottom: 1px solid #e4e7ed;
+  }
+
+  .selection-prompt i {
+    margin-right: 6px;
+    color: #409eff;
+  }
+
+  .select-person-dialog {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 0 !important;
+    max-height: 90vh;
+  }
+  .select-person-dialog .el-dialog__header {
+    flex-shrink: 0;
+  }
   .select-person-dialog .el-dialog__body {
     height: 540px;
+    max-height: calc(90vh - 120px);
     padding: 0 5px !important;
+    box-sizing: border-box;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .select-person-dialog .el-dialog__footer {
+    flex-shrink: 0;
   }
 
   .transe-div {
-    height: calc(100% - 50px);
+    flex: 1 1 auto;
+    height: 100%;
+    min-height: 0;
+    box-sizing: border-box;
     overflow: hidden;
-    margin: 15px 0;
+    margin: 10px 0;
     padding: 10px;
     display: flex;
     justify-content: center;
+    align-items: stretch;
 
     .left-select-person {
       width: 400px;
       border: 1px solid rgb(235, 238, 245);
       border-radius: 5px;
       height: 100%;
+      min-height: 0;
       overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-sizing: border-box;
+
+      > div:first-child {
+        flex-shrink: 0;
+      }
 
       .el-tree {
-        height: calc(100% - 80px);
+        flex: 1 1 auto;
+        min-height: 0;
+        height: auto;
         overflow: auto;
       }
     }
 
     .trans-bt {
       width: 100px;
+      flex-shrink: 0;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -427,21 +481,34 @@ export default {
       width: 400px;
       border: 1px solid rgb(235, 238, 245);
       border-radius: 5px;
-      overflow: auto;
-      height: calc(100vh - 448px);
-      // height: calc(100% - 60px);
+      height: 100%;
+      min-height: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-sizing: border-box;
+
+      > div:first-child {
+        flex-shrink: 0;
+      }
+
+      .choosed-checked {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: auto;
+      }
 
       .el-checkbox {
         margin-right: 0;
         width: 100%;
         margin-bottom: 3px;
       }
-      .el-checkbox.is-checked{
+      .el-checkbox.is-checked {
         background: aliceblue;
       }
     }
   }
-  .choosed-checked .el-checkbox__input{
+  .choosed-checked .el-checkbox__input {
     display: none;
   }
 }

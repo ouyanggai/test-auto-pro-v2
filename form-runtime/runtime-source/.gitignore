@@ -1,4 +1,7 @@
 node_modules/
+.rsh-flow-source/
 dist/
+!src/lib/vue-form-making/dist/
+!src/lib/vue-form-making/dist/**
 dist.zip
 .DS_Store

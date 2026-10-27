@@ -43,11 +43,13 @@
     <!-- 新版审批人自选，老版因为流程配置时节点配置了公司权限。新版只能选全集团的人 -->
     <PersonSelectDialog :visible.sync="oldNodeChooseVisible" v-if="oldNodeChooseVisible" @getSelectPerson="getSelectPerson"
       :nextNodeName="nextNodeName" @showFlowNodeDetail="showFlowNodeDetail" :nextNodeProxyId="currentChooseNodeId"
-      :nodeAuditType="nodeAuditType" :countersignNum="countersignNum"/>
+      :nodeAuditType="nodeAuditType" :countersignNum="countersignNum"
+      :selection-prompt="isCarbonCopyNode ? '请选择要抄送的人' : ''"/>
     <!-- 2025.1.2审批人自选更换成审批人范围选择 -->
     <RangePersonSelect :visible.sync="nodeChooseVisible" v-if="nodeChooseVisible" @getSelectPerson="getSelectPerson"
       :nextNodeName="nextNodeName" @showFlowNodeDetail="showFlowNodeDetail" :nextNodeProxyId="currentChooseNodeId"
-      :nodeAuditScopeList="nodeAuditScopeList" :nodeAuditType="nodeAuditType" :countersignNum="countersignNum"/>
+      :nodeAuditScopeList="nodeAuditScopeList" :nodeAuditType="nodeAuditType" :countersignNum="countersignNum"
+      :selection-prompt="isCarbonCopyNode ? '请选择要抄送的人' : ''"/>
 
     <!-- 并行审批人自选 -->
     <el-dialog v-if="parallelChooseVisible" width="400px" title="并行节点自选" class="nodePerson"
@@ -60,7 +62,7 @@
         </span>
         <!-- <span v-for="audit in chooseNode.nodeAuditList" :key="audit.id"> {{ audit.name }} </span> -->
         <el-button type="text" size="mini" @click="chooseParallelNode(chooseNode)">
-          {{ nextAuditorList.findIndex(el=>el.nodeProxyId == chooseNode.nextNodeTemplateId) > -1 ? '重新选择' : '选择人员' }}</el-button>
+          {{ nextAuditorList.findIndex(el=>el.nodeProxyId == chooseNode.nextNodeTemplateId) > -1 ? (chooseNode.nodeType == 'carbon_copy' ? '重新选择抄送人' : '重新选择') : (chooseNode.nodeType == 'carbon_copy' ? '选择抄送人' : '选择人员') }}</el-button>
       </div>
       <span slot="footer" class="dialog-footer">
         <el-button type="primary" @click="handleSaveParallelChooseNode">提 交</el-button>
@@ -77,7 +79,7 @@
               <span v-if="branch.nextNodeTemplateId == audit.nodeProxyId">{{ audit.name }} </span>
             </span>
             <el-button type="primary" :disabled="branch.nextNodeTemplateId != chooseBranchNode.nextNodeTemplateId"
-              @click="handleChooseBranchNode(branch.branchName ,branch.nodeName,branch.nextNodeTemplateId,branch)" v-if="branch.auditType == 'run_node_choose'">选择审批人</el-button>
+              @click="handleChooseBranchNode(branch.branchName ,branch.nodeName,branch.nextNodeTemplateId,branch)" v-if="branch.auditType == 'run_node_choose'">{{ branch.nodeType == 'carbon_copy' ? '选择抄送人' : '选择审批人' }}</el-button>
           </span>
           <span v-if="branch.auditType == 'initiator'">由发起人审批</span>
           <span v-if="branch.auditType == 'assign'">由流程配置人员审批</span>
@@ -133,6 +135,10 @@ import math from '@/utils/math.js'
 import { deepClone,generateRandomId } from "@/utils";
 import Api from '@/api';
 import extendedAttributeUsers from "@/components/extendedAttributeUsers.vue"
+import { normalizeCaseCompanyRelevance } from '../../caseFlowBizRelevance';
+import { bindBusinessFlowInstance } from '../../flowBusinessLifecycle';
+import { areTravelExpenseTotalsEqual, getTravelExpenseTotals } from '../../components/travelExpenseTotals';
+import { getContractRmbAmount } from '@/utils/contractAmount';
 export default {
   name: 'FlowDialog',
   components: {
@@ -255,6 +261,7 @@ export default {
       nodeAuditScopeList:[],
       nodeAuditType:'',
       countersignNum:'',
+      isCarbonCopyNode: false,
       //生成批次号
       batchCode:generateRandomId(32),
       extendedVisible:false,
@@ -371,7 +378,7 @@ export default {
             this.saveCostFundsBusiness(flag);
           } else {
             this.enterpriseHandleSubmit(flag);
-          }         
+          }
           // else if (this.selectFlowType == 'refund_bid') { // 投标保证金退还请款
           //   this.saveBidBondRefundBusiness(flag);
           // }
@@ -533,7 +540,7 @@ export default {
       }else if(this.selectFlowType =='travel_expense'){ // 差旅报销
         name = this.selectFlowName+ '-' + value['expenseUserName'] + '-' + value['expenseInAccountInfoList_total'] + '元'
       } else if (this.selectFlowType == 'contract_compliance_review' || this.selectFlowType == 'contract_seal_review') { // 合规和盖章评审
-        let contract = value['contractNumber'] + value['contractName'] + '-' + value['contractSum'] + '元'
+        let contract = value['contractNumber'] + value['contractName'] + '-' + getContractRmbAmount(value) + '元'
         name = this.selectFlowName + '-' + contract;
       } else if (this.selectFlowType == 'monthly_perf_reserveTalent'){ // 后备英才月度绩效
         let str = '';
@@ -548,15 +555,23 @@ export default {
         name = this.selectFlowName + str;
       } else if (this.selectFlowType == 'contract_invoicing'){ // 合同开票申请单
         let contract = value['contractObj'] ? '-' + value['contractNumber'] + JSON.parse(value['contractObj']).name : '';
-        let sumNumber = value['invoiceMoney'] ? '-' + JSON.parse(value['invoiceMoney']) + '元' : '-' + 0 + '元';
+        let sumNumber = value['invoiceMoney'] !== undefined && value['invoiceMoney'] !== '' ? '-' + value['invoiceMoney'] + '元' : '-' + 0 + '元';
         let str = value['hasContract'] == '有合同开票' ? (contract + sumNumber) : sumNumber;
-        name = this.selectFlowName + str;
+        let invoicingCompany = value['collectCompanyName'] || '';
+        invoicingCompany = invoicingCompany ? '-' + invoicingCompany : '';
+        name = this.selectFlowName + invoicingCompany + str;
       }else if (this.selectFlowType == 'contract_receipt_form') { // 合同收款表单
         let contract = value['contractObj'] && JSON.parse(value['contractObj']).name ?  '-' + value['contractNumber'] + JSON.parse(value['contractObj']).name : '';
         // let contract = value['contractObj'] ? '-' + value['contractNumber'] + JSON.parse(value['contractObj']).name : '';
         let sumNumber = value['realityMoneyTotal'] ? '-' + JSON.parse(value['realityMoneyTotal']) + '元' : '-' + 0 + '元';
         let str = value['hasContract'] == '是' ? (contract + sumNumber) : sumNumber;
         name = this.selectFlowName + str;
+      } else if (this.selectFlowType == 'stock_transfer_funds') { // 股转款登记表
+        let projectName = '';
+        try {
+          projectName = value['selectProject'] ? JSON.parse(value['selectProject']).name || '' : '';
+        } catch (e) {}
+        name = this.selectFlowName + (projectName ? '-' + projectName : '');
       } else if (this.selectFlowType == 'contract_payment_form') { // 合同付款表单
         let contract = value['contractObj']&&JSON.parse(value['contractObj']).name ? '-' + value['contractNumber'] + JSON.parse(value['contractObj']).name : '';
         let sumNumber = value['applyPaymentAmount'] ? '-' + JSON.parse(value['applyPaymentAmount']) + '元' : '-' + 0 + '元';
@@ -746,6 +761,7 @@ export default {
         if (this.formId == '') { // 无表单
           param.data.flowProxyId = this.flowId;
         } else {
+          param.data.flowProxyId = this.flowId;
           param.data.formProxyId = this.formId;
         }
         // if (flag) {
@@ -761,17 +777,21 @@ export default {
           //   })
           // }else{
           // 2025.9.9后端说要去掉nextAuditorList
-          param.nextAuditorList = this.nextAuditorList.map(item=>{
-            if(item.nodeProxyId === undefined)item.nodeProxyId = this.nextNodeProxyId
-            return item
-          });
+          if (this.clickMethod != 'draft') {
+            param.nextAuditorList = this.nextAuditorList.map(item=>({
+              ...item,
+              auditDetailType: item.auditDetailType || 'personnel',
+              nodeProxyId: item.nodeProxyId || this.nextNodeProxyId
+            }));
+          }
           // }
         // }
-        if (this.chooseBranchList && this.chooseBranchList.length) {
+        if (this.clickMethod != 'draft' && this.chooseBranchList && this.chooseBranchList.length) {
           // param.fixedExecuteNodeId = this.chooseBranchNode.nextNodeTemplateId;
           //chooseBranchList去重
           this.chooseBranchList = Array.from(new Set(this.chooseBranchList));
           // 2025.9.9后端说要去掉nextAuditorList
+          param.nextAuditorList = param.nextAuditorList || [];
           this.chooseBranchList.forEach(item=>{
             param.nextAuditorList.push({nodeProxyId:item})
           })
@@ -865,9 +885,15 @@ export default {
         param.batchCode = this.batchCode;
         let submitDataResult = await this.$refs.OtherSteps2.$refs.generateForm.triggerEvent('beforeSubmitAndDraft', { flowDialog: this, clickMethod: this.clickMethod, param, init: true }); // 等待执行自定义业务完之后流程提交和存草稿zxf
         if (this.operaFile) { // 表单需要操作文件（只针对一个文件上传控件，多个文件上传控件未考虑）(目前合同付款表单在用)
-          this.formSaveFile(value, submitDataResult[0]['id']);
+          const savedBusiness = Array.isArray(submitDataResult) ? submitDataResult[0] : submitDataResult;
+          if (savedBusiness && savedBusiness.id) this.formSaveFile(value, savedBusiness.id);
         }
         if (submitDataResult === false) return
+        // 表单事件可能改写关联列表，最终提交前补齐案件流程查询所需的空公司关联。
+        param.data.flowInstanceBizRelevanceList = normalizeCaseCompanyRelevance(
+          this.selectFlowType,
+          param.data.flowInstanceBizRelevanceList
+        );
         //去重 param.data.flowInstanceBizRelevanceList
         let list = []
         param.data.flowInstanceBizRelevanceList.forEach(el=>{
@@ -879,14 +905,21 @@ export default {
         })
         param.data.flowInstanceBizRelevanceList = list
         param.data.companyId = value.global_user_basic_information.companyId
+        if (this.clickMethod == 'draft') {
+          param.data.status = 'draft';
+        } else {
+          param.data.status = 'run';
+          delete param.data.checkPermissions;
+        }
         this.$axios.post(
-          Api.schedule.saveFlowInstance,
+          this.clickMethod == 'draft' ? Api.schedule.saveFlowInstance : Api.newWorkflowCenter.flowSubmit,
           param,
           async (res) => {
             this.draftLoading = false
             this.submitLoading = false
             if (res.isSuccess) {
               await this.$refs.OtherSteps2.$refs.generateForm.triggerEvent('afterSaveFlowInstance', { flowDialog: this, clickMethod: this.clickMethod, flowInstanceData: res.data }); // 流程发起成功后执行表单业务
+              await this.syncBusinessFlowInstance(res.data, param.data.flowInstanceBizRelevanceList);
               this.afterSaveDeal()
             } else {
               this.flowErrorHandle(res)
@@ -901,6 +934,22 @@ export default {
       .finally(() => {
         this.draftLoading = false;
         this.submitLoading = false;
+      });
+    },
+    // 公共流程生命周期入口，具体业务接口由 flowBusinessLifecycle 注册表选择。
+    syncBusinessFlowInstance(flowInstanceData, bizRelevanceList) {
+      return bindBusinessFlowInstance({
+        flowType: this.selectFlowType,
+        flowInstanceData,
+        bizRelevanceList,
+        request: (url, data) => this.$axios.post(url, data)
+      }).then(result => {
+        if (!result.skipped && !result.success) {
+          this.$message.warning(result.message || '流程已创建，但业务流程实例ID回写失败');
+        }
+      }).catch(() => {
+        // 流程已经创建成功，此处不能引导用户重复提交，避免生成重复流程实例。
+        this.$message.warning('流程已创建，但业务流程实例ID回写失败，请联系管理员处理');
       });
     },
     // 递归遍历流程树，处理form_person类型的节点
@@ -988,6 +1037,7 @@ export default {
         const updateFile = []
         attachList.map(item=>{
           const file = item.data
+          if(!file) return
           file.fileStatus = '2'
           const updateFileItem = this.updateFileStatus({id:file.id,fileName:file.fileName.split('.')[0],fileStatus:file.fileStatus})
           updateFile.push(updateFileItem)
@@ -1028,10 +1078,7 @@ export default {
 
           const values = this.$refs.OtherSteps2.$refs.generateForm.getValues()
           if(this.selectFlowType =='travel_expense'){ // 差旅报销单
-            const {expenseBudgetList_total,expenseInAccountInfoList_total,travelPersonnelVoList_total,expenseDetailList_total} = values
-            let total = [expenseBudgetList_total,expenseInAccountInfoList_total,travelPersonnelVoList_total,expenseDetailList_total]
-            total = Array.from(new Set(total))
-            if(total.length>1){
+            if(!areTravelExpenseTotalsEqual(getTravelExpenseTotals(values))){
               this.submitLoading = false
               return this.$message.error('请检查费用明细、入账信息、费用预算和出差人员合计金额是否相同')
             }
@@ -1250,11 +1297,11 @@ export default {
               name:item.name,
               bizId:item.id,
               auditDetailType:"personnel",
-              nodeProxyId:item.nodeProxyId
+              nodeProxyId:item.nodeProxyId || this.currentChooseNodeId
             })
         })
       }else{
-        this.$message.warning('至少选择一位审批人');
+        this.$message.warning(this.isCarbonCopyNode ? '请选择要抄送的人' : '至少选择一位审批人');
         return false;
       }
       //如果是单独选人分支，选完后提交
@@ -1570,18 +1617,22 @@ export default {
         //   param.nextAuditorList = nextAuditorList;
         // }
         // 2025.9.9后端说要去掉nextAuditorList
-        param.nextAuditorList = this.nextAuditorList.map(item=>{
-          if(item.nodeProxyId === undefined)item.nodeProxyId = this.nextNodeProxyId
-          return item
-        });
+        if (this.clickMethod != 'draft') {
+          param.nextAuditorList = this.nextAuditorList.map(item=>({
+            ...item,
+            auditDetailType: item.auditDetailType || 'personnel',
+            nodeProxyId: item.nodeProxyId || this.nextNodeProxyId
+          }));
+        }
 
           // }
         // }
-        if (this.chooseBranchList && this.chooseBranchList.length) {
+        if (this.clickMethod != 'draft' && this.chooseBranchList && this.chooseBranchList.length) {
           // param.fixedExecuteNodeId = this.chooseBranchNode.nextNodeTemplateId;
           //chooseBranchList去重
           this.chooseBranchList = Array.from(new Set(this.chooseBranchList));
           // 2025.9.9后端说要去掉nextAuditorList
+          param.nextAuditorList = param.nextAuditorList || [];
           this.chooseBranchList.forEach(item=>{
             param.nextAuditorList.push({nodeProxyId:item})
           })
@@ -1592,8 +1643,14 @@ export default {
       if (name)param.data.name = name;
       param.batchCode = this.batchCode
       param.data.companyId = localstorageGet('companyId')
+      if (this.clickMethod == 'draft') {
+        param.data.status = 'draft';
+      } else {
+        param.data.status = 'run';
+        delete param.data.checkPermissions;
+      }
       this.$axios.post(
-        Api.schedule.saveFlowInstance,
+        this.clickMethod == 'draft' ? Api.schedule.saveFlowInstance : Api.newWorkflowCenter.flowSubmit,
         param,
         (res) => {
           this.submitLoading = false
@@ -1764,19 +1821,13 @@ export default {
     },
     // 发起人-并行节点自选审批人保存后提交
     async handleSaveParallelChooseNode() {
-      let has = true
-      this.parallelChooseNodes.forEach(item=>{
-        if(item.auditType == 'run_node_choose'){
-          let nextNodeTemplateId = item.nextNodeTemplateId
-          let index = this.nextAuditorList.findIndex(el=>el.nodeProxyId == nextNodeTemplateId)
-          if(index == -1)has = false
-        }
-      })
+      const missingNode = this.parallelChooseNodes.find(item => item.auditType == 'run_node_choose' &&
+        !this.nextAuditorList.some(auditor => auditor.nodeProxyId == item.nextNodeTemplateId && auditor.bizId));
       // let has = this.nextAuditorList.some(item=>{
       //   return item.nodeProxyId == nextNodeTemplateId
       // })
-      if(!has){
-        return this.$message.warning('该分支需选择审批人，请先选择');
+      if (missingNode) {
+        return this.$message.warning(missingNode.nodeType == 'carbon_copy' ? '请选择要抄送的人' : '该分支需选择审批人，请先选择');
       }
       this.parallelChooseVisible = false;
       if (!this.formExist) {
@@ -1792,6 +1843,7 @@ export default {
       this.parallelNextNodeTemplateId = node.nextNodeTemplateId || node.id;
       this.nextNodeName = node.nodeName
       this.currentChooseNodeId = this.parallelNextNodeTemplateId
+      this.isCarbonCopyNode = node.nodeType == 'carbon_copy';
       this.nodeAuditScopeList = node?.nodeAuditScopeList || []
       this.nodeAuditType = node.nodeAuditType;
       this.countersignNum = node.countersignNum;
@@ -1810,7 +1862,7 @@ export default {
           return item.nodeProxyId == nextNodeTemplateId
         })
         if(!has && this.chooseBranchNode.auditType == 'run_node_choose'){
-          return this.$message.warning('该分支需选择审批人，请先选择');
+          return this.$message.warning(this.chooseBranchNode.nodeType == 'carbon_copy' ? '请选择要抄送的人' : '该分支需选择审批人，请先选择');
         }
         if (!this.formExist) {
           // 表单流程
@@ -1827,6 +1879,7 @@ export default {
       this.paralleNodeName =  node1+'-'+node2
       this.nextNodeName = node2
       this.currentChooseNodeId = nodeId
+      this.isCarbonCopyNode = branch.nodeType == 'carbon_copy';
 
       this.nodeAuditScopeList = branch?.nodeAuditScopeList || []
       this.nodeAuditType = branch.nodeAuditType;
@@ -1868,7 +1921,8 @@ export default {
         name:data.name,
         auditDetailType:"personnel"
       }
-      this.nextAuditorList = [obj]
+      this.nextAuditorList = this.nextAuditorList.filter(item => item.nodeProxyId != obj.nodeProxyId);
+      this.nextAuditorList.push(obj);
       this.extendedVisible = false;
       if (!this.formExist) {
         // 表单流程
@@ -1893,7 +1947,7 @@ export default {
               this.manualChooseNodes.push({
                 nextNodeTemplateId: x.id,
                 nodeName: x.nodeName,
-                nodeType: x.type, // 为处理空节点
+                nodeType: x.type, // 为处理空节点和抄送节点
                 branchName: '分支' + (index + 1),
                 auditType: x.flowNodeAuditConfig.auditType,
                 nodeAuditScopeList:x.flowNodeAuditConfig.nodeAuditScopeList,
@@ -1910,6 +1964,8 @@ export default {
                 hasChoose = true;
                 parallelChooseNodes.push(
                   {
+                    nodeType: parallelNode.type,
+                    auditType: parallelNode.flowNodeAuditConfig.auditType,
                     nodeName: parallelNode.nodeName,
                     nextNodeTemplateId: parallelNode.flowNodeAuditConfig.nodeTemplateId,
                     nodeAuditList: [],
@@ -1927,6 +1983,7 @@ export default {
 
           } else if(res.data.errorType == 'run_node_choose'){
             this.flowNodeType = 'run_node_choose';
+            this.isCarbonCopyNode = res?.data?.node?.type == 'carbon_copy';
             this.nextNodeProxyId = res?.data?.node?.id || ''
             this.nextNodeName = res?.data?.node?.nodeName || ''
             this.currentChooseNodeId = res?.data?.node?.id
@@ -1946,8 +2003,10 @@ export default {
             this.extendedPersonList = res.data?.fullUserInfoList || []
             this.extendedVisible = true
             this.nextNodeProxyId = res?.data?.nodeProxy?.id || ''
+            this.currentChooseNodeId = this.nextNodeProxyId
           }else { // 目前没有进入这个分支，用做兜底
             this.flowNodeType = 'run_node_choose';
+            this.isCarbonCopyNode = res?.data?.node?.type == 'carbon_copy';
             this.$message({
               message: res.message,
               type: 'warning',

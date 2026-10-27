@@ -3,9 +3,42 @@ import VueRouter from 'vue-router';
 
 Vue.use(VueRouter);
 
+// Some network gateways inject a cookie-check script that reloads the page
+// after removing the hash. Move old hash links to the real pathname before
+// creating the router so an already published portal URL remains usable.
+function migrateLegacyHashRoute() {
+  if (typeof window === 'undefined' || !window.location.hash.startsWith('#/')) {
+    return;
+  }
+
+  const hashRoute = window.location.hash.slice(1);
+  const queryIndex = hashRoute.indexOf('?');
+  const pathname = queryIndex < 0 ? hashRoute : hashRoute.slice(0, queryIndex);
+  if (!pathname.startsWith('/flow/')) {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  url.pathname = pathname;
+  const hashParams = new URLSearchParams(queryIndex < 0 ? '' : hashRoute.slice(queryIndex + 1));
+  hashParams.forEach((value, key) => url.searchParams.set(key, value));
+  url.hash = '';
+  window.history.replaceState(window.history.state, '', url.toString());
+}
+
+migrateLegacyHashRoute();
+
 const routes = [
   {
     path: '/',
+    redirect: '/flow/approve'
+  },
+  {
+    path: '/flow/',
+    redirect: '/flow/approve'
+  },
+  {
+    path: '/flow/index.html',
     redirect: '/flow/approve'
   },
   {
@@ -41,8 +74,8 @@ const routes = [
 ];
 
 const router = new VueRouter({
-  mode: 'hash',
-  base: '/flow/',
+  mode: 'history',
+  base: '/',
   routes
 });
 

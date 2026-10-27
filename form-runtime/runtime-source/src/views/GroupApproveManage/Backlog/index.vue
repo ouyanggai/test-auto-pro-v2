@@ -496,6 +496,7 @@ export default {
       return new Promise((resolve,reject)=>{
         const param = {
           data: {
+            id: flowInstanceId,
             name: flowName,
             jobTaskId,
             auditRecord: {
@@ -509,7 +510,7 @@ export default {
           }
         };
         this.$axios.post(
-          Api.qualityManage.submitTask,
+          Api.newWorkflowCenter.flowAudit,
           param,
           (res) => {
             if (res.isSuccess) {
@@ -633,7 +634,7 @@ export default {
             });
             this.tableData = res.data ? res.data : [];
             this.pagination.total = res.total;
-            
+
             // 检查当前页是否超出最大页数，如果超出则回到前一页
             const maxPage = Math.ceil(this.pagination.total / this.pagination.size);
             if (maxPage > 0 && this.pagination.pages > maxPage) {
@@ -681,7 +682,7 @@ export default {
       // if (row.typeName == '新建事项流程类型') { // 新建事项流程
 
       // } else {
-        if (row.flowInstanceName.indexOf('原发') > -1) { // 转发流程
+        if (row?.flowInstanceName?.indexOf('原发') > -1) { // 转发流程
           const formExistType = row.flowInstanceBizRelevanceList.find(item => item.otherBiz == 'transpond_formExist');
           this.formExist = formExistType?.otherBizId || '';
           const auditWayType = row.flowInstanceBizRelevanceList.find(item => item.otherBiz == 'transpond_auditWay');
@@ -728,7 +729,7 @@ export default {
           this.flowInstanceBizRelevanceList = deepClone(row.flowInstanceBizRelevanceList);
           // const find = row.flowInstanceBizRelevanceList.find(item => item.otherBiz == row.auditWay);
           // this.businessId = find?.otherBizId || '';
-          if (row.flowInstanceName.indexOf('原发') > -1) {
+          if (row?.flowInstanceName?.indexOf('原发') > -1) {
             const find = row.flowInstanceBizRelevanceList.find(item => item.otherBiz == (row.auditWay+'_transpondFlow'));
             this.businessId = find?.otherBizId || '';
           } else {
@@ -759,7 +760,7 @@ export default {
           if (row.flowInstanceBizRelevanceList.length == 1) {
             this.flowId = row.flowInstanceBizRelevanceList[0].otherBizId; // 业务id，绑定的什么业务就是什么
           } else {
-            if (row.flowInstanceName.indexOf('原发') > -1) {
+            if (row?.flowInstanceName?.indexOf('原发') > -1) {
               const find = row.flowInstanceBizRelevanceList.find(item => item.otherBiz == (row.auditWay+'_transpondFlow'));
               this.flowId = find?.otherBizId || '';
             } else {

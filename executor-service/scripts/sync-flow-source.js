@@ -63,7 +63,7 @@ function readJson (filePath, label) {
   }
 }
 
-// readManifest 校验双来源、完整基座提交号和受控业务映射。
+// readManifest 校验双来源和受控业务映射；提交号必须在每次准备时从远端解析。
 function readManifest () {
   const manifest = readJson(manifestPath, '执行器来源清单')
   if (manifest.schemaVersion !== 2 || !manifest.base || !manifest.business || !Array.isArray(manifest.mappings)) {
@@ -71,9 +71,9 @@ function readManifest () {
   }
   for (const source of [manifest.base, manifest.business]) {
     if (!source.repository || !source.remote || !source.branch) throw new Error('来源清单缺少 repository、remote 或 branch')
-  }
-  if (!/^[0-9a-f]{40}$/.test(String(manifest.base.head))) {
-    throw new Error(`基座 head 必须是完整提交号：${manifest.base.head}`)
+    if (Object.prototype.hasOwnProperty.call(source, 'head')) {
+      throw new Error(`来源清单不能固定 ${source.repository} 的 head；每次准备都从远端分支读取最新提交`)
+    }
   }
   if (!manifest.mappingVersion) throw new Error('来源清单缺少 mappingVersion')
   return manifest
@@ -328,7 +328,7 @@ function readCurrentMetadata () {
   return readJson(metadataPath, '执行器合成源码元数据')
 }
 
-// verifyPreparedSource 验证候选字节、映射摘要和 FormMaking 产物，供发布与构建共同使用。
+// verifyPreparedSource 验证候选字节、当次双来源提交事实、映射摘要和 FormMaking 产物。
 export function verifyPreparedSource () {
   const manifest = readManifest()
   const metadata = readCurrentMetadata()
@@ -347,7 +347,10 @@ export function verifyPreparedSource () {
   if (!/^[0-9a-f]{40}$/.test(String(metadata.businessHead))) {
     throw new Error(`合成候选全过程提交号非法：${metadata.businessHead}`)
   }
-  if (metadata.baseHead !== manifest.base.head || metadata.baseBranch !== manifest.base.branch ||
+  if (!/^[0-9a-f]{40}$/.test(String(metadata.baseHead))) {
+    throw new Error(`合成候选基座提交号非法：${metadata.baseHead}`)
+  }
+  if (metadata.baseBranch !== manifest.base.branch ||
       metadata.baseRepository !== manifest.base.repository || metadata.baseRemote !== manifest.base.remote ||
       metadata.businessBranch !== manifest.business.branch ||
       metadata.businessRepository !== manifest.business.repository || metadata.businessRemote !== manifest.business.remote) {
@@ -383,10 +386,10 @@ function writeMetadata (manifest, base, business, candidateDigest, businessDiges
   return data
 }
 
-// prepareSource 从远端冻结全过程 test HEAD，合成并原子替换候选；任何失败都保留旧候选不动。
+// prepareSource 每次从两个远端 test 解析最新 HEAD，仅将本次 SHA 用于一致构建和追溯。
 export function prepareSource () {
   const manifest = readManifest()
-  const base = { ...manifest.base }
+  const base = resolveBranchHead(manifest.base, true)
   const business = resolveBranchHead(manifest.business, false)
   const mapHash = mappingHash(manifest)
   const current = readCurrentMetadata()
@@ -394,7 +397,7 @@ export function prepareSource () {
       current.businessHead === business.head && current.mappingHash === mapHash &&
       fs.existsSync(targetRoot)) {
     const verified = verifyPreparedSource()
-    process.stdout.write(`[GIT] 合成候选已冻结：基座 ${base.head}，全过程 ${business.head}\n`)
+    process.stdout.write(`[GIT] 两侧 test 均为最新：基座 ${base.head}，全过程 ${business.head}\n`)
     return verified.metadata
   }
 

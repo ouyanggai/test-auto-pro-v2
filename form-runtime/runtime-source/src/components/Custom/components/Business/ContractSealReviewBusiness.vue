@@ -17,6 +17,7 @@ import { generateRandomId,findPathById,getObjById } from "@/utils";
 
 import Api from '@/api';
 import { baseUrl } from '@/config/env';
+import { getContractAmountFields } from '@/utils/contractAmount';
 
 /* eslint-disable */
 export default {
@@ -670,6 +671,7 @@ export default {
         let contractSubmitType = !this.isFlowInitiate ? type : that.clickMethod
         console.log('contractSubmitType',contractSubmitType)
         console.log('JSON.parse(formVal.contractUserName)',formVal.contractUserName)
+        let contractAmountFields = getContractAmountFields(formVal)
         // return;
         let url = this.formPage ? Api.contractManage.contractInfo.modifyContract : (this.isFlowInitiate ? Api.contractManage.contractInfo.saveContractInfo : Api.contractManage.contractInfo.modifyContract)
          // 隐藏合规评审，暂时注释
@@ -687,7 +689,9 @@ export default {
           // "contractBody":"合同主体",//（合同主体需要前端逻辑整理）
           "contractContent":formVal.contractContent,
           "contractTalk":formVal.contractTalk,
-          "contractSum":formVal.contractSum,
+          "currencyCode":contractAmountFields.currencyCode,
+          "originalAmount":contractAmountFields.originalAmount,
+          "contractSum":contractAmountFields.contractSum,
           // "contractUserName":formVal.contractUserName,
           // "contractDepName":formVal.contractDepName,
           // "contractCompanyName":formVal.contractCompanyName,

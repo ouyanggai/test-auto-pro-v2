@@ -84,7 +84,11 @@ export default {
             const click = () => {
               this.deleteGroup(scope.row);
             };
-            return createElement('button', { class: 'el-button el-button--text el-button--small', style: 'color:#F56C6C;' }, [
+            return createElement('button', {
+              class: 'el-button el-button--text el-button--small',
+              style: 'color:#F56C6C;',
+              directives: [{ name: 'permission', value: '/newPerformance/groupSet/delete' }]
+            }, [
               <span onClick={click}>删除</span>
             ]);
           }

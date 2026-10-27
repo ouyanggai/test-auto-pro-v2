@@ -100,12 +100,14 @@
       :nextNodeProxyId="currentChooseNodeId"
       :nodeAuditType="nodeAuditType"
       :countersignNum="countersignNum"
+      :selection-prompt="isCarbonCopyNode ? '请选择要抄送的人' : ''"
     />
 
     <!-- 2025.1.2审批人自选更换成审批人范围选择 -->
     <RangePersonSelect :visible.sync="nodeChooseVisible" v-if="nodeChooseVisible" @getSelectPerson="getSelectPerson"
     :nextNodeName="nextNodeName" :nextNodeProxyId="currentChooseNodeId" :nodeAuditScopeList="nodeAuditScopeList"
-    :nodeAuditType="nodeAuditType" :countersignNum="countersignNum"/>
+    :nodeAuditType="nodeAuditType" :countersignNum="countersignNum"
+    :selection-prompt="isCarbonCopyNode ? '请选择要抄送的人' : ''"/>
 
     <!-- 为并行节点选择自选审批人 -->
     <el-dialog
@@ -135,7 +137,7 @@
           size="mini"
           @click="chooseParallelNode(chooseNode)"
         >
-        {{ nextAuditorList.findIndex(el=>el.nodeProxyId == chooseNode.nextNodeTemplateId) > -1 ? '重新选择' : '选择人员' }}</el-button>
+        {{ nextAuditorList.findIndex(el=>el.nodeProxyId == chooseNode.nextNodeTemplateId) > -1 ? (chooseNode.nodeType == 'carbon_copy' ? '重新选择抄送人' : '重新选择') : (chooseNode.nodeType == 'carbon_copy' ? '选择抄送人' : '选择人员') }}</el-button>
       </div>
       <span
         slot="footer"
@@ -174,7 +176,7 @@
               <span v-if="branch.nextNodeTemplateId == audit.nodeProxyId">{{ audit.name }} </span>
             </span>
             <el-button type="primary" :disabled="branch.nextNodeTemplateId != chooseBranchNode.nextNodeTemplateId"
-              @click="handleChooseBranchNode(branch.branchName, branch.nodeName,branch.nextNodeTemplateId,branch)">选择审批人</el-button>
+              @click="handleChooseBranchNode(branch.branchName, branch.nodeName,branch.nextNodeTemplateId,branch)">{{ branch.nodeType == 'carbon_copy' ? '选择抄送人' : '选择审批人' }}</el-button>
           </span>
           <span v-if="branch.auditType == 'initiator'">由发起人审批</span>
           <span v-if="branch.auditType == 'assign'">由流程配置人员审批</span>
@@ -265,6 +267,7 @@ export default {
       nodeAuditScopeList:[],
       nodeAuditType:'',
       countersignNum:'',
+      isCarbonCopyNode: false,
       //扩展属性选人
       extendedVisible:false,
       extendedPersonList:[],
@@ -386,7 +389,13 @@ export default {
     isTimeoutPage:{ //是否是超时跳过的页面
       type:Boolean,
       default:false
-    }
+    },
+    flowInstanceBizRelevanceList:{
+      type: Array,
+      default:function(){
+        return [];
+      }
+    },
   },
   computed: {},
   watch: {
@@ -431,10 +440,10 @@ export default {
       }
     });
 
-    this.$bus.$off("close");
-    this.$bus.$on("close", () => {
-      this.closeCheck();
-    });
+    // this.$bus.$off("close");
+    // this.$bus.$on("close", () => {
+    //   this.closeCheck();
+    // });
 
     this.queryStorageFormData();
   },
@@ -600,14 +609,16 @@ export default {
       return flowInstanceBizRelevanceList;
     },
     saveExpenseBudgetCommonFlowDraft(){
-      if (!this.shouldSaveExpenseBudgetCommonFlowDraft()) return Promise.resolve();
+      // if (!this.shouldSaveExpenseBudgetCommonFlowDraft()) return Promise.resolve();
       return new Promise((resolve, reject) => {
         this.$axios.post(
           Api.schedule.saveFlowInstance,
           {
-            data: {
+            data:{
               id: this.flowInstanceId,
-              flowInstanceBizRelevanceList: this.buildExpenseBudgetFlowInstanceBizRelevanceList()
+              flowInstanceBizRelevanceList: this.flowInstanceBizRelevanceList,//this.buildExpenseBudgetFlowInstanceBizRelevanceList()
+              formProxyId:this.formId,
+              status:'draft'
             }
           },
           res => {
@@ -643,6 +654,7 @@ export default {
       const param = {
         data: {
           id: this.flowInstanceId,
+          flowInstanceBizRelevanceList: this.flowInstanceBizRelevanceList,
           formProxyId: this.formId,
           status: "draft",
         },
@@ -680,18 +692,25 @@ export default {
               name:item.name,
               bizId:item.id,
               auditDetailType:"personnel",
-              nodeProxyId:item.nodeProxyId
+              nodeProxyId:item.nodeProxyId || this.currentChooseNodeId
             })
         })
       }else{
-        this.$message.warning('至少选择一位审批人');
+        this.$message.warning(this.isCarbonCopyNode ? '请选择要抄送的人' : '至少选择一位审批人');
         return false;
       }
       //如果是单独选人分支，选完后提交
       if(!this.manualChooseNodes?.length && !this.parallelNodeChooseList?.length){
-        this.saveBizData();
+        this.resumeAfterNodeSelection();
       }
       return
+    },
+    resumeAfterNodeSelection() {
+      if (this.searchFlowType == 'DRAWINGS') {
+        this.submitTask('submit');
+      } else {
+        this.saveBizData();
+      }
     },
     submitTask(type) {
       console.log('审核无表单-submitTask')
@@ -699,24 +718,34 @@ export default {
         data: {
           jobTaskId: this.jobTaskId,
           auditRecord: {
-            auditStatus: type,
+            auditStatus: type == 'submit' ? 'pass' : type,
             executeDesc: this.approveForm.approveMessage,
           },
           id: this.flowInstanceId
         },
-        nextAuditorList: null,
         formDataMongoVo: {
           data: {} // null,
         },
         tracking:this.tracking
       };
+      const nextAuditorList = (this.nextAuditorList || []).map(item => ({
+        ...item,
+        auditDetailType: item.auditDetailType || 'personnel',
+        nodeProxyId: item.nodeProxyId || this.pageNextNodeProxyId
+      }));
+      if (this.chooseBranchList && this.chooseBranchList.length) {
+        Array.from(new Set(this.chooseBranchList)).forEach(nodeProxyId => {
+          nextAuditorList.push({ nodeProxyId });
+        });
+      }
+      if (nextAuditorList.length) param.nextAuditorList = nextAuditorList;
       this.submitLoading = true;
 
       if (this.isTranspondFlow) {
         param.formDataMongoVo.data = this.formAndTranspondData;
       }
 
-      this.$axios.post(Api.qualityManage.submitTask, param, (res) => {
+      this.$axios.post(Api.newWorkflowCenter.flowAudit, param, (res) => {
         this.submitLoading = false
         if (res.isSuccess) {
           this.$message.success("提交成功");
@@ -739,10 +768,11 @@ export default {
             }
           }
         } else {
-          // this.$message.error(res.message);
+          // 失败和选人提示通过 Promise 拒绝路径统一处理。
         }
-      }).catch(() => {
+      }).catch(error => {
         this.submitLoading = false
+        this.flowErrorHandle(error);
       })
     },
     /*  getSelectPerson(data) {
@@ -885,6 +915,7 @@ export default {
             auditStatus: type,
             executeDesc: this.approveForm.approveMessage,
           },
+          flowInstanceBizRelevanceList:this.flowInstanceBizRelevanceList,
           id: this.flowInstanceId
         },
         formDataMongoVo: {
@@ -906,6 +937,7 @@ export default {
           // param.fixedExecuteNodeId = this.chooseBranchNode.nextNodeTemplateId;
           //chooseBranchList去重
           this.chooseBranchList = Array.from(new Set(this.chooseBranchList));
+          param.nextAuditorList = param.nextAuditorList || [];
           this.chooseBranchList.forEach(item=>{
             param.nextAuditorList.push({nodeProxyId:item})
           })
@@ -1038,7 +1070,7 @@ export default {
       // return
       if (type == 'pass') this.submitLoading = true
       if (type == 'no_pass') this.noSubmitLoading = true
-      this.$axios.post(Api.qualityManage.submitTask, param, (res) => {
+      this.$axios.post(Api.newWorkflowCenter.flowAudit, param, (res) => {
         this.submitLoading = false
         this.noSubmitLoading = false
         if (res.isSuccess) {
@@ -1047,6 +1079,7 @@ export default {
             const attachList = this.$refs.attachList.attachList
             attachList.map(item=>{
               const file = item.data
+              if(!file) return
               if(type=='no_pass'){
                 file.fileStatus = '3'
               }else{
@@ -1121,6 +1154,9 @@ export default {
         // },
         data: {
           id: this.noFormFlowInstanceId,
+          status: 'run',
+          formProxyId: this.formId,
+          flowProxyId: this.flowProxyId,
         },
         formDataMongoVo: {
           data: {
@@ -1128,7 +1164,6 @@ export default {
           },
         },
       };
-
       // 传这个字段为了多分支流程那边的判断；调剂单不用做分支判断
       if (type == "expense_budget") {
         const infoForm =
@@ -1219,17 +1254,19 @@ export default {
       if (this.searchFlowType == 'monthly_perf') {
         param.formDataMongoVo.data.userInfo = (this.$parent.$parent.$refs.monthly_perf?.form || this.$parent.$refs.monthly_perf?.form)?.userId;
       }
+      param.data.status = 'run';
       // console.log('this.nextAuditorList',this.nextAuditorList)
       // if (flag) {
           // param.nextAuditorList = this.nextAuditorList;
-        param.nextAuditorList = this.nextAuditorList.map(item=>{
-          item.auditDetailType = "personnel"
-          if(item.nodeProxyId === undefined)item.nodeProxyId = this.pageNextNodeProxyId
-          return item
-        });
+        param.nextAuditorList = this.nextAuditorList.map(item=>({
+          ...item,
+          auditDetailType: 'personnel',
+          nodeProxyId: item.nodeProxyId || this.pageNextNodeProxyId
+        }));
       // }
       if (this.chooseBranchList && this.chooseBranchList.length) {
         this.chooseBranchList = Array.from(new Set(this.chooseBranchList));
+        param.nextAuditorList = param.nextAuditorList || [];
         this.chooseBranchList.forEach(item=>{
           param.nextAuditorList.push({nodeProxyId:item})
         })
@@ -1241,11 +1278,12 @@ export default {
       }
       console.log('param',param)
       // return;
+      param.data.flowInstanceBizRelevanceList = this.flowInstanceBizRelevanceList
       param.data.companyId = localstorageGet('companyId')
       this.$axios
         .post(
           // Api.schedule.saveFlowInstance,
-          Api.schedule.saveFlowInstanceAgain,
+          Api.newWorkflowCenter.flowReSubmit,
           param
         )
         .then((res) => {
@@ -1350,19 +1388,13 @@ export default {
 
     // 发起人-并行节点自选审批人保存后提交
     async handleSaveParallelChooseNode() {
-      let has = true
-      this.parallelNodeChooseList.forEach(item=>{
-        if(item.auditType == 'run_node_choose'){
-          let nextNodeTemplateId = item.nextNodeTemplateId
-          let index = this.nextAuditorList.findIndex(el=>el.nodeProxyId == nextNodeTemplateId)
-          if(index == -1)has = false
-        }
-      })
-      if(!has){
-        return this.$message.warning('该分支需选择审批人，请先选择');
+      const missingNode = this.parallelNodeChooseList.find(item => item.auditType == 'run_node_choose' &&
+        !this.nextAuditorList.some(auditor => auditor.nodeProxyId == item.nextNodeTemplateId && auditor.bizId));
+      if (missingNode) {
+        return this.$message.warning(missingNode.nodeType == 'carbon_copy' ? '请选择要抄送的人' : '该分支需选择审批人，请先选择');
       }
       this.parallelChooseVisible = false;
-      this.saveBizData();
+      this.resumeAfterNodeSelection();
       return
     },
     // 先保存业务数据
@@ -1574,7 +1606,7 @@ export default {
                checkPermissions: 'first'
              }
            };
-           this.$axios.post(Api.schedule.saveFlowInstanceAgain, param, res => {
+           this.$axios.post(Api.newWorkflowCenter.flowReSubmit, param, res => {
                resolve(res);
            });
        });
@@ -1687,6 +1719,7 @@ export default {
       this.parallelNextNodeTemplateId = node.nextNodeTemplateId || node.id;
       this.nextNodeName = node.nodeName
       this.currentChooseNodeId = this.parallelNextNodeTemplateId
+      this.isCarbonCopyNode = node.nodeType == 'carbon_copy';
       this.nodeAuditScopeList = node?.nodeAuditScopeList || []
       this.nodeAuditType = node.nodeAuditType;
       this.countersignNum = node.countersignNum;
@@ -1706,9 +1739,9 @@ export default {
           return item.nodeProxyId == nextNodeTemplateId
         })
         if(!has && this.chooseBranchNode.auditType == 'run_node_choose'){
-          return this.$message.warning('该分支需选择审批人，请先选择');
+          return this.$message.warning(this.chooseBranchNode.nodeType == 'carbon_copy' ? '请选择要抄送的人' : '该分支需选择审批人，请先选择');
         }
-        this.saveBizData();
+        this.resumeAfterNodeSelection();
       } else {
         this.$message.warning('请选择流程分支');
       }
@@ -1717,6 +1750,7 @@ export default {
     handleChooseBranchNode(node1, node2,nodeId,branch) {
       this.nextNodeName = node2
       this.currentChooseNodeId = nodeId
+      this.isCarbonCopyNode = branch.nodeType == 'carbon_copy';
       this.nodeAuditScopeList = branch?.nodeAuditScopeList || []
       this.nodeAuditType = branch.nodeAuditType;
       this.countersignNum = branch.countersignNum;
@@ -1772,9 +1806,10 @@ export default {
         name:data.name,
         auditDetailType:"personnel"
       }
-      this.nextAuditorList = [obj]
+      this.nextAuditorList = (this.nextAuditorList || []).filter(item => item.nodeProxyId != obj.nodeProxyId);
+      this.nextAuditorList.push(obj);
       this.extendedVisible = false;
-      this.saveBizData();
+      this.resumeAfterNodeSelection();
       return
     },
     //流程错误处理
@@ -1792,7 +1827,7 @@ export default {
               this.manualChooseNodes.push({
                 nextNodeTemplateId: x.id,
                 nodeName: x.nodeName,
-                nodeType: x.type, // 为处理空节点
+                nodeType: x.type, // 为处理空节点和抄送节点
                 branchName: '分支' + (index + 1),
                 auditType: x.flowNodeAuditConfig.auditType,
                 nodeAuditScopeList:x.flowNodeAuditConfig.nodeAuditScopeList,
@@ -1810,6 +1845,7 @@ export default {
                 parallelNodeChooseList.push(
                   {
                     auditType: 'run_node_choose',
+                    nodeType: parallelNode.type,
                     nodeName: parallelNode.nodeName,
                     nextNodeTemplateId: parallelNode.flowNodeAuditConfig.nodeTemplateId,
                     nodeAuditList: [],
@@ -1829,6 +1865,7 @@ export default {
           } else if(res.data.errorType == 'run_node_choose'){
             console.log('自选1')
             this.flowNodeType = 'run_node_choose';
+            this.isCarbonCopyNode = res?.data?.node?.type == 'carbon_copy';
             this.nextNodeProxyId = res?.data?.node?.id || ''
             this.nextNodeName = res?.data?.node?.nodeName || ''
             this.currentChooseNodeId = res?.data?.node?.id
@@ -1850,6 +1887,7 @@ export default {
             this.nextNodeProxyId = res?.data?.nodeProxy?.id || ''
           }  else {
             this.flowNodeType = 'run_node_choose';
+            this.isCarbonCopyNode = res?.data?.node?.type == 'carbon_copy';
             this.$message({
               message: res.message,
               type: 'warning',

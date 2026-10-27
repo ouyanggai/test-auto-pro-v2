@@ -16,8 +16,10 @@
 export function recursionRouter(userRouter = [], allRouter = []) {
   const realRoutes = [];
   allRouter.forEach((v, i) => {
+    let matched = false;
     userRouter.forEach((item, index) => {
       if (item.href === v.path) {
+        matched = true;
         if (item.children && item.children.length > 0) {
           v.meta.saasTitle = item.name;
           v.children = recursionRouter(item.children, v.children);
@@ -31,6 +33,10 @@ export function recursionRouter(userRouter = [], allRouter = []) {
         realRoutes.push(v);
       }
     });
+    if (!matched && v.meta && v.meta.fixed) {
+      // Fixed routes are available before their menu resources are configured.
+      realRoutes.push(v);
+    }
   });
   realRoutes.sort((i, j) => i.sort - j.sort); // 菜单排序
   return realRoutes;

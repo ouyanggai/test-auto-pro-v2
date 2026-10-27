@@ -22,7 +22,14 @@
 | 预发 (VUE_APP_FLAG=test) | `http://192.168.1.220:8081/api` | `http://192.168.1.220:8081/flow/` | `http://192.168.1.220:8085` |
 | 生产 | `https://iserver.runshihua.com/api` | `https://iserver.runshihua.com/flow/` | `https://ioffice.runshihua.com` |
 
-配置文件: `src/config/env.js`
+配置文件: `src/config/env.js`。容器构建时通过以下参数注入 `VUE_APP_*`，iframe 宿主仍可通过 `RSH_FLOW_CONFIG` 消息或 URL 参数覆盖 `baseUrl`。流水线的 `BASE_URL` 会作为 API 访问地址写入前端；组件还会在浏览器发送 XHR/fetch 前，把 FormMaking 等表单定义中的旧绝对 `/api` 地址替换为该地址。
+
+| 构建参数 | 前端变量 | 说明 |
+|----------|----------|------|
+| `BASE_URL` | `VUE_APP_BASE_URL` | API 根地址 |
+| `VIEW_FILE_URL` | `VUE_APP_VIEW_FILE_URL` | 文件预览服务地址 |
+| `ONLY_OFFICE_URL` | `VUE_APP_ONLY_OFFICE_URL` | OnlyOffice 地址 |
+| `WS_URL` | `VUE_APP_WS_URL` | WebSocket 地址 |
 
 ## 快速开始
 
@@ -33,12 +40,34 @@ npm install
 # 启动开发服务器 (端口 9528)
 npm run serve
 
-# 构建测试包
+# 在 test 分支构建测试包（先从新 Git 同步平台 test）
 npm run build:test
 
-# 构建生产包 (输出到 dist/, publicPath: /flow/)
+# 在 master 分支构建生产包（先同步平台 master，输出到 dist/）
 npm run build:prod
 ```
+
+### Docker 构建
+
+Dockerfile 使用两个 stage：第一段构建 Vue 静态资源，第二段使用 OpenResty 提供 `/flow/`。
+
+```bash
+git switch master
+npm run sync:prod
+docker build \
+  --build-arg FLOW_ENV_NAME=production \
+  --build-arg BASE_URL=https://api.example.com/api \
+  --build-arg VIEW_FILE_URL=https://reader.example.com \
+  --build-arg ONLY_OFFICE_URL=https://office.example.com \
+  --build-arg WS_URL=wss://api.example.com/sk/ \
+  -t rsh-flow-components:latest .
+```
+
+流水线参数模板见 `Jenkinsfile.example`，变量清单见 `deploy/env/flow.env.example`。
+
+`BASE_URL` 可填写同源路径 `/api`，也可填写完整的 `https://gateway.example.com/api`。修改流水线参数后需要重新构建镜像。
+
+融合分页通过 `/flow/detail/:id?taskContext=...` 打开流程时，URL 会包含流程上下文。`nginx/rsh-flow-components.conf` 配置了 `client_header_buffer_size 16k` 和 `large_client_header_buffers 4 64k`，将单条 HTTP 请求行上限提高到 64KB，避免超过默认 8KB 时返回 414。修改此配置后需重新构建并发布流程组件镜像。若外层 Ingress 仍返回 414，还需将其请求头缓冲限制同步到不低于此值。
 
 ## 目录结构
 
@@ -172,8 +201,12 @@ window.__RSH_FLOW_CONFIG__ = {
 本项目发布到内部 Verdaccio 私有 npm 仓库 (`http://192.168.1.248:4873/`)。
 
 ```bash
-# 1. 从源项目同步最新代码
-npm run sync                # node scripts/sync.js
+# 1. 从对应环境分支同步最新代码
+# 测试环境：rsh-flow-components 必须在 test 分支，源项目使用 test 分支
+npm run sync:test
+
+# 正式环境：rsh-flow-components 必须在 master 分支，源项目使用 master 分支
+npm run sync:prod
 
 # 2. 构建测试包或生产包
 npm run build:test
@@ -193,8 +226,11 @@ npm run publish:flow:dry    # dry-run 模式，仅预览不实际发布
 npm view @rsh/flow-components --registry http://192.168.1.248:4873/
 ```
 
-**源项目路径**: `/Volumes/oygsky/bigsys/rsh-cloud-invest-power-system/`
-**同步清单**: `sync-manifest.json`
+构建通过 Git 自动同步，无需在本机另放一份平台源码：`master` 的 `npm run build` / `build:prod` 拉取平台 `master`，`test` 的 `npm run build:test` 拉取平台 `test`。源仓库地址由本项目新 Git `origin` 推导，仓库名为 `rsh-cloud-invest-power-system`。
+
+每次构建冻结源提交，并将分支、SHA、FormMaking 目录和文件哈希写入 `sync-source-lock.json`。拉取失败、分支不匹配、同步内容被本地修改时停止构建；不会自动提交或推送代码。PaaS 在镜像构建前通过已有 Git 凭据同步，Docker 校验准备好的快照。
+
+同步范围见 `sync-manifest.json`，完整操作和验收方法见 [Git 同步说明](docs/git-sync.md)。
 
 ## customerCode 映射表
 

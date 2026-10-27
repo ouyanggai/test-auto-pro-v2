@@ -56,7 +56,6 @@ import { approveManageFlowStatus, deepClone } from '@/utils';
 import EnterpriseExamineDialog from '@/views/GroupApproveManage/components/EnterpriseExamineDialog';
 import CheckFlowNodeDetail from '@/views/GroupApproveManage/components/CheckFlowNodeDetail.vue';
 import DyTable from '@/components/DyTable';
-import { parseJsonObject } from '@/utils/parse-value';
 
 export default {
   name: '',
@@ -167,7 +166,7 @@ export default {
             this.$refs[this.fieldType].doLayout(); // 解决宽度偶尔缩小
           }
 
-          const getMyNewVal = parseJsonObject(this.myValue);
+          let getMyNewVal = JSON.parse(this.myValue);
           if (getMyNewVal.flowList) {
             let selectTableIdList = getMyNewVal.flowList.map(x=>x.id);
             let selectFlowList = [];
@@ -227,13 +226,12 @@ export default {
       this.myFlowList = await this.getList();
     },
     getList() { // 获取列表数据
-      const myValue = parseJsonObject(this.myValue)
-      console.log('getList************', myValue, this)
+      console.log('getList************',JSON.parse(this.myValue),this)
       return new Promise((resolve,reject)=>{
         let url='',data = {};
         if  (this.fieldType == 'flow'){ // 流程
           console.log(223344,this.myValue)
-          let flowType = myValue.flowType || '';
+          let flowType = JSON.parse(this.myValue).flowType;
           console.log('获取流程列表',flowType)
           url = Api.schedule.getFlowInstanceList;
           data = {
@@ -277,7 +275,10 @@ export default {
       })
     },
     confirm() {
-      // console.log('this.selectData',this.selectData)
+      if (!this.selectData || !this.selectData.length) {
+        this.$message.warning('请至少选择一条数据');
+        return;
+      }
       let newSelectData = this.selectData.map(x=>({
         name:x.name,
         id:x.id,
@@ -285,7 +286,7 @@ export default {
       }))
       this.$emit('selectFlow', JSON.stringify({
         flowList: newSelectData,
-        flowType: parseJsonObject(this.myValue).flowType || ''
+        flowType: JSON.parse(this.myValue).flowType ? JSON.parse(this.myValue).flowType :''
       }));
       // return;
       this.handleClose();

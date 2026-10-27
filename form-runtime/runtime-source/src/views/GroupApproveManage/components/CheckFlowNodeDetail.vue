@@ -24,6 +24,7 @@
             :nextNodeProxyId="nextNodeProxyId"
             :editType="3"
             :initiatorId="initiatorId"
+            :initiatorName="initiatorName"
             :flowInstanceId="flowInstanceId"
             :nodeConfigUser="nodeConfigUser"
             :formData="formData"
@@ -47,6 +48,9 @@
 import Api from '@/api';
 import NodeWrap from '../CheckFlow/index.vue';
 import DragZoomScroll from '@/components/DragZoomScroll';
+
+const INVESTMENT_PLATFORM_CODE = '200001';
+
 export default {
   name: '',
   components: { NodeWrap, DragZoomScroll },
@@ -87,14 +91,22 @@ export default {
       type:String,
       default:''
     },
+    initiatorName: {
+      type: String,
+      default: ''
+    },
     companyId:{
       type:String,
       default:''
     },
+    carbonCopyFlow: {
+      type: Boolean,
+      default: false
+    },
   },
   watch: {},
   async created() { 
-    if (this.flowInstanceId) {
+    if (this.flowInstanceId && !this.carbonCopyFlow) {
       this.formData  = await this.getFormData();
     }
   },
@@ -102,7 +114,7 @@ export default {
     this.getDetailNode();
     this.getCompanyPersonList();
     // 检测宽高，超出后可移动
-    this.queryCurrentProcessor()
+    if (!this.carbonCopyFlow) this.queryCurrentProcessor();
   },
   methods: {
     // checkRect() {
@@ -166,6 +178,28 @@ export default {
     // 获取该条在途流程的流程详情
     getDetailNode() {
       console.log('getDetailNode-this.flowInstanceId',this.flowInstanceId)
+      if (this.carbonCopyFlow) {
+        this.$axios.post(
+          Api.newWorkflowCenter.flowProxyFindById,
+          {
+            platformCode: INVESTMENT_PLATFORM_CODE,
+            data: { id: this.flowId },
+            shieldingNode: false
+          },
+          res => {
+            const flowData = res && (res.flowNodeTemplate ? res : (res.data || res));
+            if (!flowData || !flowData.flowNodeTemplate) {
+              this.$message.error((res && (res.errorMsg || res.message)) || '查询流程详情失败');
+              return;
+            }
+            this.already = true;
+            this.nodeConfig = flowData.flowNodeTemplate;
+          }
+        ).catch(() => {
+          this.$message.error('查询流程详情失败，请检查网络后重试');
+        });
+        return;
+      }
       const url = this.flowInstanceId ? Api.schedule.getFlowInstanceTemplateNode : Api.schedule.flowTemplateFindById;
       this.$axios.post(
         url,

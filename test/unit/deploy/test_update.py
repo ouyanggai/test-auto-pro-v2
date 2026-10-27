@@ -68,7 +68,6 @@ class PackageTest(unittest.TestCase):
                 'repository': 'rsh-flow-components',
                 'remote': 'base-remote',
                 'branch': 'test',
-                'head': 'a' * 40,
             },
             'business': {
                 'repository': 'rsh-cloud-invest-power-system',

@@ -20,11 +20,13 @@
 
       <template scope="scope">
         <span v-if="printRead" class="print-read-label">
-          <span>{{ displayName }}</span>
+          <!-- <span>333</span> -->
+          <span>{{ JSON.parse(currentInfoObj).name }}</span>
+          <!-- <span>{{ JSON.parse(currentInfoObj) }}</span> -->
         </span>
 
         <template v-else>
-          <el-input v-if="displayName" readonly :value="displayName" :disabled="disabled" @focus="openInfoDialog" style="width:100%;padding-left: 5px;">
+          <el-input v-if="JSON.parse(currentInfoObj).name" readonly v-model="scope.viewName" :disabled="disabled" @focus="openInfoDialog" style="width:100%;padding-left: 5px;">
             <el-button slot="append" icon="el-icon-search" @click="checkDetail"></el-button>
           </el-input>
           <el-button v-else type="primary" :disabled="disabled" @click="openInfoDialog" style="margin-left:5px;">{{ placeholder }}</el-button>
@@ -48,7 +50,6 @@ import mixin from './mixin.js';
 import MySendFlowList from './MySendFlowList.vue';
 import EnterpriseExamineDialog from '@/views/GroupApproveManage/components/EnterpriseExamineDialog';
 import CheckFlowNodeDetail from '@/views/GroupApproveManage/components/CheckFlowNodeDetail.vue';
-import { parseJsonObject } from '@/utils/parse-value';
 
 export default {
   name: 'GeneralListSelectShow',
@@ -123,25 +124,8 @@ export default {
     },
   },
   computed: {
-    // parsedInfo 统一处理单选组件的空值，避免模板表达式直接解析空字符串导致整张表单渲染失败。
-    parsedInfo () {
-      return parseJsonObject(this.currentInfoObj)
-    },
-    displayName () {
-      const info = this.parsedInfo
-      if (!info) return ''
-      if (typeof info === 'string') return info
-      if (info.name) return info.name
-      if (info.contractName) return info.contractName
-      if (info.title) return info.title
-      if (info.contractNumber) return info.contractNumber
-      if (info.rowData) {
-        const row = parseJsonObject(info.rowData)
-        if (row && (row.name || row.contractName)) return row.name || row.contractName
-      }
-      return info.id || ''
-    },
-    fieldType () {
+    fieldType(){
+      console.log('this.fieldSelectType',this.fieldSelectType)
       let copyType = JSON.parse(JSON.stringify(this.fieldSelectType))
       var str = '';
       for (var item in this.typeList){
@@ -158,17 +142,15 @@ export default {
     checkDetail(){
       // console.log(111)
       console.log(111,this.currentInfoObj)
-      const rowData = parseJsonObject(this.currentInfoObj).rowData
-      const row = parseJsonObject(rowData)
-      if (Object.keys(row).length) this.previewHandle(row, false)
+      let row = JSON.parse(JSON.parse(this.currentInfoObj).rowData);
+      this.previewHandle(row, false);
     },
     openInfoDialog(data){
       console.log('openInfoDialog-data',this.currentInfoObj)
-      const info = parseJsonObject(this.currentInfoObj)
-      let selectCompanyId = info.selectCompanyId || '';
+      let selectCompanyId = this.currentInfoObj != '' && JSON.parse(this.currentInfoObj).selectCompanyId ? JSON.parse(this.currentInfoObj).selectCompanyId : '';
       console.log('selectCompanyId',selectCompanyId)
-      console.log('this.currentInfoObj.formType', info.formType)
-      if (info.formType == 'contract_receipt_form') {
+      console.log('this.currentInfoObj.formType',JSON.parse(this.currentInfoObj).formType)
+      if (JSON.parse(this.currentInfoObj) && JSON.parse(this.currentInfoObj).formType == 'contract_receipt_form') {
         if (selectCompanyId) {
           this.flowListVisible = true;
         } else {
@@ -185,7 +167,8 @@ export default {
 
       // 添加表单校验
       this.$nextTick(() => { 
-        this.$parent.$parent.validate()
+        const result = this.$parent.$parent.validate([this.fieldSelectType])
+        if (result && typeof result.catch === 'function') result.catch(() => {})
       })
     },
     test(){

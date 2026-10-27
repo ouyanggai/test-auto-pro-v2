@@ -46,7 +46,6 @@ import { localstorageGet } from '@/utils/auth';
 import { formatMoney } from '@/utils/index';
 import EnterpriseExamineDialog from '@/views/GroupApproveManage/components/EnterpriseExamineDialog';
 import DyTable from '@/components/DyTable';
-import { parseJsonObject } from '@/utils/parse-value';
 
 export default {
   name: '',
@@ -255,7 +254,7 @@ export default {
         }else if(values.applicationFundsVo_payCompanyId){//还款单
           companyId = values.applicationFundsVo_payCompanyId
         } else if(values.RequestPayoutList){ //请款单
-          companyId = parseJsonObject(values.myCompanyName).id || '';
+          companyId = values.myCompanyName && JSON.parse(values.myCompanyName) ? JSON.parse(values.myCompanyName).id : '';
           if(!companyId){
             return this.$message.warning('请先选择收款单位！')
           }

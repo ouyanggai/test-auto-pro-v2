@@ -614,8 +614,12 @@ export default {
         console.log('instanceData',instanceData)
         // let row = arr.find(item=>item.flowInstanceId == this.$route.query.id);
         let row = instanceData[0]
-        this.skipPreviewHandle(row);
-        this.$router.replace({path: '/groupApproveManage',query: {}})
+        if (row) {
+          this.skipPreviewHandle(row);
+        } else {
+          this.$message.warning('未找到对应的流程表单');
+        }
+        this.$router.replace({path: this.$route.path, query: { tab: 'finished' }}).catch(() => {})
         this.isSkip = true;
       }
     },
@@ -639,11 +643,12 @@ export default {
           },
           res => {
             if (res.isSuccess) {
-              resolve(res.data)
+              resolve(Array.isArray(res.data) ? res.data : [])
             } else {
+              resolve([])
             }
           }
-        )
+        ).catch(() => resolve([]))
       })
     },
     // 查看

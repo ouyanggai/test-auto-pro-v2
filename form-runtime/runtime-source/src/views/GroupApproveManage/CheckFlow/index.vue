@@ -163,6 +163,46 @@
       </div>
       <addNode :childNodeP.sync="nodeConfig.childFlowNodeTemplate" :editType.sync="editType"></addNode>
     </div>
+    <!-- 抄送节点沿用其他节点的点击查看配置交互。 -->
+    <div class="node-wrap" v-if="nodeConfig.type == 'carbon_copy'">
+      <div class="node-wrap-box">
+        <div>
+          <div class="title carbon-copy-node">
+            <span class="iconfont"><i class="el-icon-s-promotion"></i></span>
+            <span class="editable-title">{{ nodeConfig.nodeName }}</span>
+          </div>
+          <div class="content" style="cursor: default;">
+            <div class="text">
+              <el-popover placement="right" width="400" trigger="click">
+                <div class="node-config-detail">
+                  <span>节点名称：</span><span>{{ nodeConfig.nodeName || '-' }}</span>
+                </div>
+                <div class="node-config-detail">
+                  <span>节点类型：</span><span>抄送节点</span>
+                </div>
+                <div v-if="nodeConfig.flowNodeAuditConfig && nodeConfig.flowNodeAuditConfig.auditType == 'initiator'" class="node-config-detail">
+                  <span>抄送人类型：</span><span>发起人自己</span>
+                </div>
+                <div v-else class="node-config-detail" style="display: flex;">
+                  <div>抄送人：</div>
+                  <div style="width: 300px;">
+                    <el-tag
+                      v-for="(person, index) in getCarbonCopyRecipients(nodeConfig)"
+                      :key="person.id || person.name || index"
+                      size="mini"
+                      :disable-transitions="true"
+                    >{{ person.name }}</el-tag>
+                    <span v-if="!getCarbonCopyRecipients(nodeConfig).length">未配置</span>
+                  </div>
+                </div>
+                <span slot="reference" style="cursor: pointer;">查看节点配置</span>
+              </el-popover>
+            </div>
+          </div>
+        </div>
+      </div>
+      <addNode :childNodeP.sync="nodeConfig.childFlowNodeTemplate" :editType.sync="editType"></addNode>
+    </div>
     <!-- 协同--目前和普通审批节点功能一样-考虑未来协同功能改变-单独写一份 -->
     <div class="node-wrap" v-if="nodeConfig.type == 'synergy'">
       <div class="node-wrap-box">
@@ -382,7 +422,7 @@
             <NodeWrap v-if="item.childFlowNodeTemplate && item.childFlowNodeTemplate" :isDraft="isDraft"
               :nodeConfig.sync="item.childFlowNodeTemplate" :branchType="'condition'" :fields.sync="fields"
               :editType.sync="editType"  :auditRecordNodeList="auditRecordNodeList" :nextNodeProxyId="nextNodeProxyId"
-              :initiatorId="initiatorId" :flowInstanceId="flowInstanceId" :nodeConfigUser="nodeConfigUser" :formData="formData" :companyId="companyId"></NodeWrap>
+              :initiatorId="initiatorId" :initiatorName="initiatorName" :flowInstanceId="flowInstanceId" :nodeConfigUser="nodeConfigUser" :formData="formData" :companyId="companyId"></NodeWrap>
             <div class="top-left-cover-line" v-if="index == 0"></div>
             <div class="bottom-left-cover-line" v-if="index == 0"></div>
             <div class="top-right-cover-line" v-if="index == nodeConfig.conditionNodes.length - 1"></div>
@@ -408,7 +448,7 @@
               :nodeConfig.sync="item.childFlowNodeTemplate" :parallelTop.sync="nodeConfig" :jsonData.sync="jsonData"
               :fields.sync="fields" :editType.sync="editType" :branchType="'parallel'" :auditRecordNodeList="auditRecordNodeList"
               :nextNodeProxyId="nextNodeProxyId" :formData="formData" :flowInstanceId="flowInstanceId"
-              :initiatorId="initiatorId" :nodeConfigUser="nodeConfigUser" :companyId="companyId"
+              :initiatorId="initiatorId" :initiatorName="initiatorName" :nodeConfigUser="nodeConfigUser" :companyId="companyId"
               >
             </NodeWrap>
             <div class="top-left-cover-line" v-if="index == 0"></div>
@@ -436,7 +476,7 @@
               :nodeConfig.sync="item.childFlowNodeTemplate" :branchTop.sync="nodeConfig" :jsonData.sync="jsonData"
               :fields.sync="fields" :editType.sync="editType" :branchType="'custom_choose'" :auditRecordNodeList="auditRecordNodeList"
               :nextNodeProxyId="nextNodeProxyId" :formData="formData" :flowInstanceId="flowInstanceId"
-              :initiatorId="initiatorId" :nodeConfigUser="nodeConfigUser" :companyId="companyId"
+              :initiatorId="initiatorId" :initiatorName="initiatorName" :nodeConfigUser="nodeConfigUser" :companyId="companyId"
               >
             </NodeWrap>
             <div class="top-left-cover-line" v-if="index == 0"></div>
@@ -472,7 +512,7 @@
     <NodeWrap v-if="nodeConfig.childFlowNodeTemplate && nodeConfig.childFlowNodeTemplate" :isDraft="isDraft"
       :nodeConfig.sync="nodeConfig.childFlowNodeTemplate" :jsonData.sync="jsonData" :fields.sync="fields"
       :editType.sync="editType"  :auditRecordNodeList="auditRecordNodeList" :nextNodeProxyId="nextNodeProxyId"
-      :initiatorId="initiatorId" :flowInstanceId="flowInstanceId" :nodeConfigUser="nodeConfigUser" :formData="formData" :companyId="companyId">
+      :initiatorId="initiatorId" :initiatorName="initiatorName" :flowInstanceId="flowInstanceId" :nodeConfigUser="nodeConfigUser" :formData="formData" :companyId="companyId">
     </NodeWrap>
   </div>
 </template>
@@ -483,7 +523,7 @@ export default {
   name: 'NodeWrap',
   // props: ['nodeConfig', 'jsonData', 'fields', 'companyPersonList', 'editType', 'parallelTop', 'branchTop', 'branchType', 'auditRecordNodeList', 'isDraft'],
   props: ['nodeConfig', 'jsonData', 'fields', 'editType', 'parallelTop', 'branchTop', 'branchType', 'auditRecordNodeList',
-  'isDraft','nextNodeProxyId','initiatorId','flowInstanceId','nodeConfigUser','propAllUserList','formData','companyId','dialogVisible'],
+  'isDraft','nextNodeProxyId','initiatorId','initiatorName','flowInstanceId','nodeConfigUser','propAllUserList','formData','companyId','dialogVisible'],
   // 'isTried'
   components: {
     addNode
@@ -593,6 +633,28 @@ export default {
     // console.log('this.companyId-查看流程',this.companyId)
   },
   methods: {
+    getCarbonCopyRecipients(nodeConfig) {
+      const auditConfig = nodeConfig && nodeConfig.flowNodeAuditConfig;
+      if (auditConfig && auditConfig.auditType === 'initiator') return [];
+
+      const nodeId = nodeConfig && nodeConfig.id;
+      const runtimeUsers = nodeId && this.nodeConfigUser && this.nodeConfigUser[nodeId] && this.nodeConfigUser[nodeId].userList;
+      if (Array.isArray(runtimeUsers) && runtimeUsers.length) {
+        return runtimeUsers.map(item => ({
+          id: item.id || item.phone,
+          name: item.name || item.userName
+        })).filter(item => item.name);
+      }
+      const configuredUsers = (auditConfig && (auditConfig.userVoList || auditConfig.flowNodeDetailConfigList)) || [];
+      return Array.isArray(configuredUsers) ? configuredUsers.map(item => {
+        const id = item.bizId || item.id;
+        const companyPerson = (this.companyPersonList || []).find(person => person.id == id);
+        return {
+          id,
+          name: item.name || item.userName || (companyPerson && companyPerson.name)
+        };
+      }).filter(item => item.name) : [];
+    },
     getDeadlineTypeText(deadlineType) {
       return this.deadlineTypeFormatter[deadlineType] || '';
     },
@@ -1240,6 +1302,23 @@ export default {
 
 .title.empty-node {
   background-color: #8a8c8e !important;
+}
+
+.node-wrap-box .title.carbon-copy-node {
+  background-color: #13b886 !important;
+}
+
+.carbon-copy-content .text {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.carbon-copy-detail-trigger {
+  color: #409eff;
+  cursor: inherit;
+  white-space: nowrap;
 }
 
 .title.synergy-node {

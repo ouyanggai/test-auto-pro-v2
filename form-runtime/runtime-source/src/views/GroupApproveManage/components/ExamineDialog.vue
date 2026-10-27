@@ -14,7 +14,8 @@
           <div class="left-side">
             <!-- 公共关联流程 -->
             <FormCommonFlowPost ref="flowListSelect" :flowInstanceBizRelevanceList="flowInstanceBizRelevanceList" :initiatorId="initiatorId"
-            :isExamine="isExamine" :isReInitiate="isReInitiate" />
+            :isExamine="isExamine" :isReInitiate="isReInitiate"
+            @update:flowInstanceBizRelevanceList="handleFlowInstanceBizRelevanceListUpdate"/>
             <!-- 费用报销单 -->
             <ExpensesClaimForm :operaType="operaType" :id="flowId" :flowProxyId="flowProxyId"
               :flowNodeProxyId="flowNodeProxyId" :isExamine="isExamine" v-if="searchFlowType == 'expense_budget'" ref="ExpensesClaimForm"
@@ -612,7 +613,7 @@ export default {
         });
       }
     },
-    printPage(list) {
+    async printPage(list) {
       console.log('list,printPage',list)
       console.log('this.searchFlowType', this.searchFlowType)
       // if (this.searchFlowType == 'add_event_flow') {
@@ -622,8 +623,47 @@ export default {
       //   },1200)
       // }
       // return
-      this.$refs.ExpensesClaimForm?.printPage(list);
+      const expenseClaimForm = this.$refs.ExpensesClaimForm;
+      if (expenseClaimForm) {
+        const restoreFileNames = this.hideExpenseDetailPrintFileNames(expenseClaimForm);
+        try {
+          await expenseClaimForm.printPage(list);
+        } finally {
+          restoreFileNames();
+        }
+      }
       this.$refs[this.searchFlowType]?.printPage?.(list);
+    },
+    hideExpenseDetailPrintFileNames(expenseClaimForm) {
+      const printContent = expenseClaimForm.$el.querySelector('#printcontent');
+      if (!printContent) return () => {};
+
+      const expenseDetailTable = Array.from(printContent.querySelectorAll('table')).find(table => {
+        const titleCell = table.rows[0]?.cells[0];
+        return titleCell?.textContent.trim() === '费用明细';
+      });
+      if (!expenseDetailTable || !expenseDetailTable.rows[1]) return () => {};
+
+      const headerCells = Array.from(expenseDetailTable.rows[1].cells);
+      const attachmentColumnIndex = headerCells.findIndex(cell => cell.textContent.trim() === '附件');
+      if (attachmentColumnIndex === -1) return () => {};
+
+      const detailCount = expenseClaimForm.infoForm?.expenseDetailList?.length || 0;
+      const fileNameNodes = [];
+      Array.from(expenseDetailTable.rows).slice(2, 2 + detailCount).forEach(row => {
+        const fileList = row.cells[attachmentColumnIndex]?.firstElementChild;
+        if (!fileList) return;
+        Array.from(fileList.children).forEach(fileNameNode => {
+          fileNameNodes.push({ node: fileNameNode, display: fileNameNode.style.display });
+          fileNameNode.style.display = 'none';
+        });
+      });
+
+      return () => {
+        fileNameNodes.forEach(({ node, display }) => {
+          node.style.display = display;
+        });
+      };
     },
     getFileList() {
       if (this.searchFlowType == 'DRAWINGS') {
@@ -670,6 +710,12 @@ export default {
     },
     updateList(){
       this.$emit('success');
+    },
+    // 同步更新 flowInstanceBizRelevanceList，保留非commonFlow条目
+    handleFlowInstanceBizRelevanceListUpdate(commonFlowItems) {
+      const nonFlowItems = (this.flowInstanceBizRelevanceList || [])
+        .filter(item => item.otherBiz !== 'commonFlow');
+      this.flowInstanceBizRelevanceList = [...nonFlowItems, ...(commonFlowItems || [])];
     },
     postExamine() {
       // this.bindBatchFileByIds();

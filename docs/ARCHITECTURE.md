@@ -38,13 +38,13 @@ F-036 将页面执行从 `form-runtime/` 迁到根目录 `executor-service/`，�
 
 实现与人工门禁见 `docs/features/F-036-independent-executor-native-page.md` 和 `docs/s2/`。
 
-## F-053 发布源码准备与版本冻结
+## F-053 发布时同步最新源码
 
 状态 `ready_for_manual`；实现与验证范围见 [F-053](features/F-053-release-sync-invest-test.md)。
 
 - **简单合成**：全过程远端 `test` 的完整 `src`、`public`、`package.json` 和 `package-lock.json` 直接作为页面主体；只从受控 `rsh-flow-components` 来源保留执行器 `/flow` 路由、身份、请求和组件注册适配文件。全过程普通业务文件不再拆分成手工组件清单，也不覆盖适配边界。本机 `oygdev2` 工作树不参与发布。
-- **冻结时点**：`deploy/update.py` 在每次发布或 `--package-only` 的源码准备阶段解析远端 `test`，以该次 SHA 取得 Git 对象；打包和构建不再解析浮动分支。过程中远端前移留给下次发布；解析或取得该提交失败，当前发布返回非零，不回落旧业务快照。
-- **同步边界**：合同业务组件、发起/审批页面及 `src/utils/contractAmount.js` 均随全过程完整应用源码进入候选；已知路由适配页面 `FlowDetail.vue` 与 `FlowInitiate.vue` 也由执行器来源保留。业务文件保持来源原文，不修改 FormMaking 库源码，也不直接运行带 macOS 路径的上游同步脚本。
+- **每次取新**：`deploy/update.py` 在每次发布或 `--package-only` 的源码准备阶段分别重新解析 `rsh-flow-components` 基座和全过程业务仓库远端 `test` 的最新 HEAD；来源清单不固定提交号。一次发布把刚解析的两个 SHA 用作本次下载、合成、构建和版本追溯事实；下一次发布会重新查询，不复用上次发布的 SHA。解析或取得提交失败时当前发布返回非零，不回落旧候选。
+- **同步边界**：合同业务组件、发起/审批页面及 `src/utils/contractAmount.js` 均随全过程完整应用源码进入候选；路由适配页面、请求路由与门户身份模块、FormMaking 受控入口元数据由执行器来源保留。业务文件保持来源原文，不修改 FormMaking 库源码，也不直接运行带 macOS 路径的上游同步脚本。
 - **隔离与安全**：从远端 Git 对象生成独立候选，只在完整构造并通过摘要核对后替换；远端读取或构造失败不改动已准备候选。同步不修改参考检出或用户提供的源仓库，不要求切分支，不清理其修改。
 - **单一构建输入**：发布包从已核对的合成候选生成，不能继续仅归档基座 SHA；包内保存两套来源、映射版本和合成输入摘要。`build-native-page` / `Dockerfile.executor` 校验并消费同一输入，构建缓存包含业务源码变化；直接 Compose 构建同样要求准备事实完整且匹配。
 - **版本证明**：执行器源码元数据、构建记录、`deploy/release-source.json` 及成功发布事实能对上基座 SHA、业务 SHA 与内容摘要。执行器在已发布容器启动时不自行改变这些来源。失败准备不能把旧包当作新包继续上传，成功同步也不等于构建或发布成功。
@@ -382,7 +382,7 @@ F-012 取代旧的规则目录、ConstraintIR、通用生成器和路径准备�
 ## form-runtime 受控维护流水线
 
 - 维护语义迁移自旧 V2 ADR-0016，固定状态机为 `INSPECT → SYNC → SYNC_CHECK → BUILD → RESTART → VERIFY → COMPLETED`。当前项目不复制旧 Docker/Colima 部署：`PnpmOperator` 在任务工作区同步完整候选源码，并构建到 `.runtime/form-runtime-maintenance/versions/candidate-job-N`；静态健康完成前不触碰 current。切换同时替换 `runtime-source/` 与 `web/dist/form-runtime` 并持久化 current 指针，切换或最终 HTTP 健康失败时从 previous 源码/产物版本恢复并再次核验。
-- 同步来源固定为 `参考代码/rsh-flow-components` 的规范仓库、远端和 `test`，但不把历史 HEAD 永久写死在代码中；该分支对应当前目标测试环境，包含 `GroupApproveManage` 的测试环境同步结果。更新参考仓库仍先经过 `make refs-sync`/`make refs-status` 的干净、分支和快进约束；维护任务创建时持久化当刻 HEAD，Worker 执行前复核同一快照。维护 API 不接受路径、分支、HEAD、构建命令或环境选择，任务中途来源变脏或变化即失败。
+- 同步来源固定为 `参考代码/rsh-flow-components` 的新机房 HTTP 仓库和 `test`；参考仓库只由 `make refs-sync` 更新，单仓迁移用 `make refs-sync-selected REPOSITORIES=rsh-flow-components`，两者均先核对干净状态及本地提交是远端祖先，只允许首次克隆或快进。维护任务创建时持久化当刻 HEAD，Worker 执行前复核同一快照；维护 API 不接受路径、分支、HEAD、构建命令或环境选择，任务中途来源变脏或变化即失败。参考目录和运行时元数据用于确认各自实际快照，不设跨维护任务复用的固定 SHA。
 - 候选同步与构建在 `.runtime/form-runtime-maintenance` 隔离目录完成，实际构建显式消费候选 `runtime-source/`。切换时同时替换 19001 Vue CLI 监听的真实源码和生产 `web/dist/form-runtime` 产物；`runtime-health.json` 公开非敏感仓库/分支/HEAD/摘要，运行中的 HTTP 地址必须报告同一快照才能完成。候选失败不影响 current，切换或健康失败恢复源码与产物 previous 并再次核验。
 - `form-runtime/sync-manifest.json` 是唯一项目同步映射：当前来源本身已是独立组件仓库，因此完整镜像其 tracked `src/`、`public/`、原生同步清单/脚本和构建资产；旧 V2/上游的 35 项生成映射继续随源码保留。项目同步执行逐文件 `SYNC_CHECK`、完整目标摘要、本地适配保护和实际运行源码未知修改拒绝。状态通过 `make form-runtime-status`，一键任务通过 `make form-runtime-sync` 或系统设置页触发，两者都不能覆盖参数。
 - `test_form_runtime_sync_jobs` 是维护任务正确性来源，数据库唯一键保证单活动任务。Worker 使用租约续期与 fencing token；旧 Worker 不能推进阶段或完成任务，进程重启后从持久化的 `RESTART/VERIFY` 和 candidate/previous 事实恢复，不能重新同步或覆盖既有候选。在线日志写入运行目录，API 最多返回最新 512 KiB 并标记截断，SID 与表单数据不会进入维护任务或日志。

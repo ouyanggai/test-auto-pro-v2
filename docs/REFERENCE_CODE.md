@@ -14,7 +14,7 @@
 | `rsh-cloud-workflow-center-api` | `参考代码/java-serve/rsh-cloud-workflow-center-api` | `git@192.168.1.155:rsh-cloud/cloud-server-full/rsh-cloud-workflow-center-api.git` | `master` | `088aed79ad0b7d3cca09f38a0325724a8d685cd7` | 2026-09-04 13:34:09 +0800 |
 | `rsh-framework-all` | `参考代码/rsh-framework-all` | `git@192.168.1.155:rsh-cloud/cloud-framework/rsh-framework-all.git` | `test` | `84bb19736a8abf78a7ad71b2f714f0e2aec35758` | 2026-09-04 13:34:09 +0800 |
 | `rsh-cloud-invest-power-system` | `参考代码/rsh-cloud-invest-power-system` | `git@192.168.1.155:rsh-cloud/cloud-web/business-system/rsh-cloud-invest-power-system.git` | `test` | `8a00cb9995dfc030d3aa88fe3d2bcc94aabce76f` | 2026-09-04 13:34:09 +0800 |
-| `rsh-flow-components` | `参考代码/rsh-flow-components` | `git@192.168.1.155:rsh-cloud/portal/rsh-flow-components.git` | `test` | `24f3a280cd3942cf26644bd278c84c7aa3a8b116` | 2026-09-04 13:34:09 +0800 |
+| `rsh-flow-components` | `参考代码/rsh-flow-components` | `http://120.237.81.30:2020/rsh-cloud/cloud-web/business-system/rsh-flow-components.git` | `test` | `546ca9c87a5155428f4a904efbf26c7b814a6289` | 2026-10-27 14:49:46 +0800 |
 | `rsh-cloud-vue-form-making` | `参考代码/rsh-cloud-vue-form-making` | `http://192.168.1.155/rsh-cloud/cloud-web/cloud-system/rsh-cloud-vue-form-making.git` | `oygdev` | `695b2783e226606548eb86aa4ab84ca7bca99140` | 2026-09-04 13:34:09 +0800 |
 | `rsh-cloud-saas-implementation-web` | `参考代码/rsh-cloud-saas-implementation-web` | `http://192.168.1.155/rsh-cloud/cloud-web/cloud-system/rsh-cloud-saas-implementation-web` | `test` | `89947a923e7d204c7e11ba75192183397370fde4` | 2026-09-04 13:34:09 +0800 |
 

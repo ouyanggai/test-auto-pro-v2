@@ -1,11 +1,10 @@
 {
   "schemaVersion": 2,
-  "mappingVersion": "f053-group-approve-v2",
+  "mappingVersion": "f053-group-approve-v3",
   "base": {
     "repository": "rsh-flow-components",
-    "remote": "git@192.168.1.155:rsh-cloud/portal/rsh-flow-components.git",
-    "branch": "test",
-    "head": "e141a799408192bac1fe1f3dc7d821a2cee64986"
+    "remote": "http://120.237.81.30:2020/rsh-cloud/cloud-web/business-system/rsh-flow-components.git",
+    "branch": "test"
   },
   "business": {
     "repository": "rsh-cloud-invest-power-system",
@@ -30,6 +29,8 @@
         "lib/vue-form-making/**",
         "utils/auth.js",
         "utils/axios.js",
+        "utils/backendRequestRouting.js",
+        "utils/portalFlowAuth.js",
         "utils/runtimeAuthSync.js",
         "utils/runtimePlatformCode.js",
         "utils/flowDetailRow.js",
@@ -66,8 +67,11 @@
     "src/config/**",
     "src/components/InitFlowDialog/**",
     "src/components/fmComponents/**",
+    "src/lib/vue-form-making/**",
     "src/utils/auth.js",
     "src/utils/axios.js",
+    "src/utils/backendRequestRouting.js",
+    "src/utils/portalFlowAuth.js",
     "src/utils/runtimeAuthSync.js",
     "src/utils/runtimePlatformCode.js",
     "src/utils/flowDetailRow.js",

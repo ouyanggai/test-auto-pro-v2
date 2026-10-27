@@ -3,6 +3,7 @@
  * 处理父窗口与流程应用之间的通信
  */
 import { setConfig } from '@/config/env';
+import { setBackendRequestRoutingConfig } from '@/utils/backendRequestRouting';
 import { getLocationParam, persistRuntimeAuth } from '@/utils/runtimeAuthSync';
 import store from '@/store';
 import router from '@/router';
@@ -33,6 +34,7 @@ function handleAuth(payload) {
     userName,
     companyId,
     companyName,
+    userDepartmentName,
     topCompanyId,
     groupDepartment,
     userData
@@ -43,6 +45,7 @@ function handleAuth(payload) {
   const nextUserName = userName || userData?.displayName || userData?.name || userData?.userName;
   const nextCompanyId = companyId || userData?.companyId;
   const nextCompanyName = companyName || userData?.companyName || userData?.companyVo?.name;
+  const nextUserDepartmentName = userDepartmentName || userData?.userDepartmentName || userData?.departmentName || userData?.deptVo?.departmentName;
   const nextTopCompanyId = topCompanyId || userData?.topCompanyId || userData?.flag;
   const nextGroupDepartment = groupDepartment || userData?.groupDepartment;
 
@@ -53,6 +56,7 @@ function handleAuth(payload) {
     userName: nextUserName,
     companyId: nextCompanyId,
     companyName: nextCompanyName,
+    userDepartmentName: nextUserDepartmentName,
     topCompanyId: nextTopCompanyId,
     groupDepartment: nextGroupDepartment
   });
@@ -75,6 +79,9 @@ function handleAuth(payload) {
   if (nextCompanyName) {
     store.commit('user/SET_COMPANY_NAME', nextCompanyName);
   }
+  if (nextUserDepartmentName) {
+    store.commit('user/SET_DEPARTMENT_NAME', nextUserDepartmentName);
+  }
   if (nextGroupDepartment) {
     store.commit('user/SET_GROUP_DEPARTMENT', nextGroupDepartment);
   }
@@ -87,6 +94,9 @@ function handleAuth(payload) {
 
 function handleConfig(payload) {
   setConfig(payload);
+  if (payload && payload.baseUrl) {
+    setBackendRequestRoutingConfig({ apiBaseUrl: payload.baseUrl });
+  }
 }
 
 function handleNavigate(payload) {
@@ -103,12 +113,13 @@ function initFromUrlParams() {
   const userName = getLocationParam('userName');
   const companyId = getLocationParam('companyId');
   const companyName = getLocationParam('companyName');
+  const userDepartmentName = getLocationParam('userDepartmentName');
   const topCompanyId = getLocationParam('topCompanyId');
   const groupDepartment = getLocationParam('groupDepartment');
   const baseUrl = getLocationParam('baseUrl');
   const route = getLocationParam('route');
 
-  if (sid || customerCode || userId || userName || companyId || companyName || topCompanyId || groupDepartment) {
+  if (sid || customerCode || userId || userName || companyId || companyName || userDepartmentName || topCompanyId || groupDepartment) {
     handleAuth({
       sid,
       customerCode,
@@ -116,6 +127,7 @@ function initFromUrlParams() {
       userName,
       companyId,
       companyName,
+      userDepartmentName,
       topCompanyId,
       groupDepartment
     });

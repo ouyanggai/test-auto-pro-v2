@@ -98,8 +98,8 @@ def allowed_candidate(relative):
 
 
 def prepare_source(root):
-    """从远端冻结全过程 test，并生成基座与业务合成候选；不可达时不沿用旧业务快照。"""
-    print('读取全过程 test 并准备合成执行源码……', flush=True)
+    """每次发布重新读取两侧远端 test，并生成当次合成候选。"""
+    print('重新读取组件基座与全过程 test 最新提交并准备执行源码……', flush=True)
     environment = dict(
         os.environ,
         EXECUTOR_SOURCE_ROOT=str(root / 'executor-service'),

@@ -1,9 +1,9 @@
 # rsh-flow-components 来源与同步边界
 
 - 来源仓库：`参考代码/rsh-flow-components`
-- 规范远端：`git@192.168.1.155:rsh-cloud/portal/rsh-flow-components.git`
+- 规范远端：`http://120.237.81.30:2020/rsh-cloud/cloud-web/business-system/rsh-flow-components.git`
 - 规范分支：`test`
-- 当前运行快照基线：`bff4ef8b938db5578c3f7eab1f482a4e9388917c`（历史 `master` 快照；切换规范分支不自动覆盖）
+- 当前本地运行源码快照：`.f007-source.json` 仍记录历史 `master` 提交 `bff4ef8b938db5578c3f7eab1f482a4e9388917c`；本次只更新了规范来源配置，没有覆盖 `runtime-source/`。需要通过受控表单运行时维护任务同步新机房 `test` 后，才能更新本条快照事实。
 - 实际运行源码：`form-runtime/runtime-source/`
 - 本地适配层：`form-runtime/src/`、`build/`、根构建配置和同步适配脚本
 - 目标 FormMaking：`runtime-source/src/lib/vue-form-making/dist/`

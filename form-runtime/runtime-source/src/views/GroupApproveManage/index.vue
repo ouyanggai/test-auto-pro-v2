@@ -26,11 +26,11 @@
       </div> -->
       <div class="right-aside">
         <div class="right-aside-inner">
-          <el-button type="primary" icon="el-icon-circle-plus-outline" @click="addApprove"
+          <el-button v-if="activeName != 'carbonCopy'" type="primary" icon="el-icon-circle-plus-outline" @click="addApprove"
             style="position: absolute;right:40px;z-index: 100;">发起流程
           </el-button>
           <el-tabs v-model="activeName" @tab-click="handleClick" size="medium">
-            <div class="search">
+            <div class="search" v-if="activeName != 'carbonCopy'">
               <el-input style="width:120px;margin-right:5px" v-model.trim="flowInstanceName" @keyup.enter.native="getTaskList"
                 placeholder="标题搜索">
                 <i slot="suffix" style="cursor:pointer" @click="getTaskList" class="el-input__icon el-icon-search"></i>
@@ -85,6 +85,10 @@
                 :initiator="initiator" :startDate="startDate" :endDate="endDate" :flowName="flowName"
                 :flowInstanceName="flowInstanceName" :status="flowStatus" />
             </el-tab-pane>
+            <el-tab-pane label="抄送我的" name="carbonCopy">
+              <CarbonCopy v-if="activeName == 'carbonCopy'" :initial-flow-instance-id="carbonCopyFlowInstanceId"
+                @initial-detail-opened="handleCarbonCopyDetailOpened" />
+            </el-tab-pane>
           </el-tabs>
         </div>
       </div>
@@ -112,6 +116,7 @@ import Submitted from './Submitted';
 import Backlog from './Backlog';
 import Finished from './Finished';
 import TimedOut from './TimedOut';
+import CarbonCopy from './CarbonCopy';
 
 import FlowDialog from './Submitted/components/FlowDialog';
 // import ExamineDialog from './components/ExamineDialog';
@@ -125,6 +130,7 @@ export default {
     Backlog,
     Finished,
     TimedOut,
+    CarbonCopy,
     FlowDialog
   },
   props: {},
@@ -169,12 +175,25 @@ export default {
         { label: '草稿', value: 'draft' }
       ],
       flowType: '',
-      batchButtonDisable:true
+      batchButtonDisable:true,
+      carbonCopyFlowInstanceId: ''
     };
   },
-  watch: {},
+  watch: {
+    '$route.query': {
+      deep: true,
+      handler(query = {}) {
+        if (query.tab === 'carbonCopy') {
+          this.activeName = 'carbonCopy';
+          this.carbonCopyFlowInstanceId = query.flowInstanceId || '';
+        }
+      }
+    }
+  },
 
   async created() {
+    if (this.$route?.query?.tab) this.activeName = this.$route.query.tab;
+    this.carbonCopyFlowInstanceId = this.$route?.query?.flowInstanceId || '';
     const params = this.$route.params;
     if (params && params.from) {
       if (params.from == 'annual_perf' || params.from == 'monthly_perf'|| params.from == 'year_kpi_work_target') {
@@ -190,9 +209,6 @@ export default {
 
       }
     }
-    if (this.$route?.query?.tab) {
-      this.activeName = this.$route.query.tab;
-    }
   },
   computed: {
     isIndeterminate() {
@@ -205,6 +221,16 @@ export default {
   },
   mounted() { },
   methods: {
+    handleCarbonCopyDetailOpened(flowInstanceId) {
+      this.carbonCopyFlowInstanceId = '';
+      const route = this.$route;
+      if (route.query.tab !== 'carbonCopy' || route.query.flowInstanceId !== flowInstanceId) return;
+      // 消息打开详情后清除一次性参数，避免刷新或切换标签页时重复弹出。
+      const query = { ...route.query };
+      delete query.flowInstanceId;
+      delete query.fromMsg;
+      this.$router.replace({ path: route.path, query, hash: route.hash });
+    },
     selectDataEvent(val){
       if(val.length)this.batchButtonDisable = false
       else this.batchButtonDisable = true
@@ -235,6 +261,7 @@ export default {
       this.getTaskList();
     },
     getTaskList() {
+      if (this.activeName == 'carbonCopy') return;
       let query = {
         initiator:this.initiator,
         flowName:this.flowName,

@@ -59,6 +59,9 @@ const api = {
     deleteReserveKpiGroup: '/web/plan/api/reserveKpiGroup/delete', // 后备英才轮岗考核表删除
     contractPaymentDelete: '/web/measuring/api/contractPaymentForm/delete', // 合同付款表单删除
     contractCollectionDelete: '/web/measuring/api/contractCollection/delete', // 合同收款表单删除
+    stockTransferFundsSave: '/web/measuring/api/stockTransferFunds/save', // 股转款登记表保存
+    stockTransferFundsUpdate: '/web/measuring/api/stockTransferFunds/update', // 股转款登记表更新
+    stockTransferFundsDelete: '/web/measuring/api/stockTransferFunds/delete', // 股转款登记表删除
     contractInvoicingDelete: '/web/measuring/api/contractInvoicing/delete', // 合同开票申请表单删除
     projectApprovalBudgetDelete: '/web/project/api/projectApprovalBudget/delete', // 项目立项删除
     proposedSupplierDelete: '/web/warehouse/center/api/supplierChooseInfo/delete', // 拟选用供应商评审表删除
@@ -747,6 +750,23 @@ const api = {
     updateFlowProxy: '/web/flowInstanceApi/updateFlowProxy', // 流程加签保存功能
     findAllAuditConfig: '/web/flowInstanceApi/findAllAuditConfig', // 查看流程节点审批范围人员
   },
+  flowCarbonCopy: {
+    list: '/newWorkflowCenter/flowCarbonCopy/list', // 查询抄送我的流程
+    detail: '/newWorkflowCenter/flowCarbonCopy/detail' // 查看抄送流程详情
+  },
+  newWorkflowCenter: {
+    flowProxyFindById: '/newWorkflowCenter/flowProxy/findById', // 查询新工作流代理流程详情
+    flowSubmit: '/newWorkflowCenter/flowInstance/submit', // 发起流程
+    flowReSubmit: '/newWorkflowCenter/flowInstance/reSubmit', // 重新发起流程
+    flowAudit: '/newWorkflowCenter/flowInstance/flowAudit' // 审批流程
+  },
+  // 案件管理
+  caseManage: {
+    myCaseList: '/externalApi/external/caseMain/myCaseList', // 我的案件列表
+    caseLedgerList: '/externalApi/external/caseMain/caseLedgerList', // 案件台账列表
+    exportMyCase: '/externalApi/external/caseMain/exportMyCase', // 我的案件导出
+    exportCaseLedger: '/externalApi/external/caseMain/exportCaseLedger' // 案件台账导出
+  },
   // 手续文件项目部
   projectDept: {
     getFormalities: '/web/project/api/formalities/getFormalitiesByProjectId',
@@ -872,6 +892,11 @@ const api = {
       getContractLedgerList: '/web/measuring/api/contractReview/getContractLedgerList', // 合同台账列表
       getRelatedPartyByUser: '/web/user/api/company/queryCompanyListByNameForRelatedParty', // 获取客户下相关方列表
       getFileByContractId: '/web/measuring/api/contractReview/getRefListById', // 根据合同id查文件类相关
+      contractChangeListByContract: '/web/measuring/api/contractChange/listByContract', // 查询合同已生效变更记录
+      contractChangeList: '/web/measuring/api/contractChange/list', // 查询合同变更申请列表
+      contractChangeDetail: '/web/measuring/api/contractChange/findById', // 查询合同变更申请详情
+      contractChangeRefFile: '/web/measuring/api/contractChange/getChangeRefFile', // 查询变更申请文件分组
+      contractChangeContractInfo: '/web/measuring/api/contractChange/contractInfo', // 查询合同变更表单带出的合同信息
       getAllUserGroup: '/web/user/api/user/getPageUserVoListOfGroup', // 获取集团所有公司人员列表
       exportContractLedger: '/web/measuring/api/contractReview/exportContractLedger', // 导出合同台账
     },
@@ -1261,6 +1286,45 @@ const api = {
     pushRecordLogPermissionSave: '/externalApi/external/pushRecordLogPermission/save', // 新金蝶日志权限保存
     pushRecordLogPermissionDelete: '/externalApi/external/pushRecordLogPermission/delete' // 新金蝶日志权限删除
   },
+    // 供应商台账
+  supplierCenter: {
+    // 供应商分类：一级大类
+    categoryList: '/newSupplier/supplier/center/category/list', // 查询一级大类列表
+    categoryAdd: '/newSupplier/supplier/center/category/add', // 新增一级大类
+    categoryUpdate: '/newSupplier/supplier/center/category/update', // 编辑一级大类
+    categoryDelete: '/newSupplier/supplier/center/category/delete', // 删除一级大类
+    // 供应商分类：二级品类
+    subCategoryList: '/newSupplier/supplier/center/category/sub/list', // 按一级大类ID查询二级品类列表
+    subCategoryListByCompany: '/newSupplier/supplier/center/category/sub/listByCompany', // 按公司ID和一级大类ID，组合查询二级品类列表
+    subCategoryAdd: '/newSupplier/supplier/center/category/sub/add', // 新增二级品类
+    subCategoryUpdate: '/newSupplier/supplier/center/category/sub/update', // 编辑二级品类
+    subCategoryDelete: '/newSupplier/supplier/center/category/sub/delete', // 删除二级品类
+    // 供应商批量入库
+    getExcelTemplate: '/newSupplier/supplier/center/import/template', // 获取批量入库模板
+    batchVerify: '/newSupplier/supplier/center/verification/batchVerify', // 供应商工商信息验证
+    // 供应商台账
+    getSupplierList: '/newSupplier/supplier/center/ledger/pageList', // 查询供应商台账列表
+    getSupplierCompanyInfo: '/newSupplier/supplier/center/ledger/detail', // 查询供应商基础工商信息和关联公司明细
+    exportLedgerData: '/newSupplier/supplier/center/ledger/export', // 导出供应商台账数据
+    getLedgerTemplate: '/newSupplier/supplier/center/ledger/template', // 获取供应商台账的导入模板
+    batchImportLedgerData: '/newSupplier/supplier/center/ledger/import', // 批量供应商台账导入-不走流程-用来导入历史数据-阶段性功能-后续关闭
+    // 评估台账
+    exportSupplierEvaluationData: '/newSupplier/supplier/center/evalLedger/export', // 导出供应商评估台账数据
+    getSupplierEvaluationList: '/newSupplier/supplier/center/evalLedger/pageList', // 查询供应商评估台账列表
+    getSupplierEvaluationDetail: '/newSupplier/supplier/center/evalLedger/detail', // 供应商评估台账详情
+    getSupplierListByNameOrCode: '/newSupplier/supplier/center/open/search', // 按名称或者编码模糊查询公司的供应商
+    updateLedgerAttachments: '/newSupplier/supplier/center/ledger/updateAttachments', // 更新供应商台账附件
+       // 清退记录
+    getExitRecordList: '/newSupplier/supplier/center/exitRecord/list', // 查询供应商的清退记录列表
+    // getExitRecordDetail: '/newSupplier/supplier/center/exitRecord/detail', // 查询供应商的清退记录详情
+    // 变更记录
+    getChangeRecordList: '/newSupplier/supplier/center/open/changeHistory', // 查询供应商的变更记录列表
+    getChangeRecordDetail: '/newSupplier/supplier/center/open/changeHistory/detail', // 查询供应商的变更记录详情
+    // 黑名单重新入库
+    getBlackListExitedSupplierList: '/newSupplier/supplier/center/open/exitedBlacklist', // 查询已清退的黑名单供应商列表
+    getReEnterSupplierList: '/newSupplier/supplier/center/blacklistReentry/list', // 查询供应商的重新入库历史记录
+    getReEntryDetail: '/newSupplier/supplier/center/blacklistReentry/detail', // 查询供应商的重新入库详情记录
+  },
   // 库存管理
   inventoryManage: {
     goodsSave: '/web/warehouse/center/api/w2/goods/save', // 材料库新增接口
@@ -1291,6 +1355,35 @@ const api = {
     goodsCheckRecordUpdate: '/web/warehouse/center/api/w2/goodsCheckRecord/update', // 盘点更新
     goodsCheckRecordList: '/web/warehouse/center/api/w2/goodsCheckRecord/list', // 盘点列表查询
     goodsCheckRecordDetail: '/web/warehouse/center/api/w2/goodsCheckRecord/findById' // 盘点详情查询
+  },
+  // 历史数据入湖 · 文档收集
+  datalake: {
+    upload: {
+      batchCreate: '/datalake/upload/batch/create',
+      start: '/datalake/upload/start',
+      partUrls: '/datalake/upload/partUrls',
+      status: '/datalake/upload/status',
+      taskList: '/datalake/upload/task/list',
+      complete: '/datalake/upload/complete',
+      cancel: '/datalake/upload/cancel',
+      batchDetail: '/datalake/upload/batch/detail'
+    },
+    document: {
+      list: '/datalake/document/list',
+      ledgerSummary: '/datalake/document/ledgerSummary',
+      detail: '/datalake/document/detail',
+      update: '/datalake/document/update',
+      reviewList: '/datalake/document/reviewList',
+      review: '/datalake/document/review',
+      reviewBatch: '/datalake/document/reviewBatch',
+      recheck: '/datalake/document/recheck',
+      resubmit: '/datalake/document/resubmit',
+      downloadUrl: '/datalake/document/downloadUrl',
+      offline: '/datalake/document/offline',
+      deleteBatch: '/datalake/document/deleteBatch',
+      operationList: '/datalake/document/operationList',
+      processStatus: '/datalake/document/processStatus'
+    }
   }
 };
 export default api;

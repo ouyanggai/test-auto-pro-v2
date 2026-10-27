@@ -1,7 +1,11 @@
 <!--
- * @Descripttion: 出差行程组件
- * @Author: zhengzetao
+ * @Descripttion: 出差行程组件 - 用于出差报销表单中规划多段行程
+ * @Author: hj
  * @Date: 2026-06-02
+ * @LastModified: 2026-07-27
+ * @Feature: 支持多段行程添加/删除，交通工具选择联动出发地/目的地城市选择器，住宿信息关联
+ * @Props: value(Array|String) - 行程数据，兼容FormMaking；disabled(Boolean) - 禁用状态；remark(String) - 页前备注
+ * @Methods: validate() - 校验行程数据；getData() - 获取行程列表
 -->
 <template>
   <div class="travel-route-planning">
@@ -46,19 +50,10 @@
         <el-table-column prop="departureCityObj" label="出发地" min-width="120">
           <template slot-scope="scope">
             <CitySelect
-              v-if="isCityPickerType(scope.row.transportationTypesObj)"
               v-model="scope.row.departureCityObj"
               placeholder="请选择出发地"
               :disabled="disabled || !scope.row.transportationTypesObj"
               :transport-type="transportTypeMap[scope.row.transportationTypesObj] || ''"
-              @change="handleFieldChange(scope.$index, 'departureCityObj')"
-            />
-            <el-input
-              class="text-left"
-              v-else
-              v-model="scope.row.departureCityObj"
-              placeholder="请输入出发地"
-              :disabled="disabled || !scope.row.transportationTypesObj"
               @change="handleFieldChange(scope.$index, 'departureCityObj')"
             />
           </template>
@@ -68,19 +63,10 @@
         <el-table-column prop="destinationCityObj" label="目的地" min-width="120">
           <template slot-scope="scope">
             <CitySelect
-              v-if="isCityPickerType(scope.row.transportationTypesObj)"
               v-model="scope.row.destinationCityObj"
               placeholder="请选择目的地"
               :disabled="disabled || !scope.row.transportationTypesObj"
               :transport-type="transportTypeMap[scope.row.transportationTypesObj] || ''"
-              @change="handleFieldChange(scope.$index, 'destinationCityObj')"
-            />
-            <el-input
-              class="text-left"
-              v-else
-              v-model="scope.row.destinationCityObj"
-              placeholder="请输入目的地"
-              :disabled="disabled || !scope.row.transportationTypesObj"
               @change="handleFieldChange(scope.$index, 'destinationCityObj')"
             />
           </template>
@@ -147,9 +133,6 @@
 
 <script>
 import CitySelect from '@/components/Custom/components/CitySelect/index.vue';
-import { parseJsonArray } from '@/utils/parse-value';
-
-const CITY_PICKER_TYPES = ['飞机', '火车'];
 
 const VALID_TRANSPORT_TYPES = ['飞机', '火车', '汽车', '轮船', '公务车', '自备车'];
 
@@ -214,6 +197,31 @@ function validateTripList(tripList) {
   return { isValid: true, errorMsg: '' };
 }
 
+/**
+ * 获取城市对象的 ID，兼容组件当前值和历史表单数据格式
+ * @param {Object|String} cityValue 城市对象或 JSON 字符串
+ * @returns {String|Number} 城市 ID
+ */
+function getCityId(cityValue) {
+  if (!cityValue) return '';
+
+  let city = cityValue;
+  if (typeof cityValue === 'string') {
+    try {
+      city = JSON.parse(cityValue);
+    } catch (e) {
+      return '';
+    }
+  }
+
+  if (Array.isArray(city)) {
+    city = city[0];
+  }
+
+  if (!city || typeof city !== 'object') return '';
+  return city.id || '';
+}
+
 
 export default {
   name: 'TravelRoutePlanning',
@@ -264,10 +272,22 @@ export default {
           this.routeList.push(this.createEmptyRoute());
           return;
         }
-        let parsedVal = parseJsonArray(val);
+        let parsedVal = val;
+        if (typeof val === 'string') {
+          try {
+            parsedVal = JSON.parse(val);
+          } catch (e) {
+            parsedVal = [];
+          }
+        }
 
         if (Array.isArray(parsedVal) && parsedVal.length > 0) {
-          this.routeList = [...parsedVal];
+          this.routeList = parsedVal.map((route, index) => ({
+            ...route,
+            sn: index + 1,
+            departureCityId: getCityId(route.departureCityObj),
+            destinationCityId: getCityId(route.destinationCityObj)
+          }));
         } else {
           this.routeList = [];
           this.routeList.push(this.createEmptyRoute());
@@ -276,17 +296,15 @@ export default {
     }
   },
   methods: {
-    // 判断交通工具是否使用城市选择器
-    isCityPickerType(transportType) {
-      return CITY_PICKER_TYPES.includes(transportType);
-    },
-
     // 创建空行程对象
     createEmptyRoute() {
       return {
+        sn: 1,
         transportationTypesObj: '',
         departureCityObj: '',
         destinationCityObj: '',
+        departureCityId: '',
+        destinationCityId: '',
         isAccommodation: '',
         accommodationLocationObj: '',
         isBackTracking: null
@@ -296,6 +314,7 @@ export default {
     // 添加行程
     addRoute() {
       this.routeList.push(this.createEmptyRoute());
+      this.syncSequenceNumbers();
       this.emitChange('routes');
     },
 
@@ -305,6 +324,7 @@ export default {
         return;
       }
       this.routeList.splice(index, 1);
+      this.syncSequenceNumbers();
       this.emitChange('routes');
     },
 
@@ -313,6 +333,8 @@ export default {
       const route = this.routeList[index];
       route.departureCityObj = '';
       route.destinationCityObj = '';
+      route.departureCityId = '';
+      route.destinationCityId = '';
       this.emitChange('transportationTypesObj');
     },
 
@@ -327,13 +349,36 @@ export default {
 
     // 字段变化
     handleFieldChange(index, field) {
+      const route = this.routeList[index];
+      if (field === 'departureCityObj') {
+        this.$set(route, 'departureCityId', getCityId(route.departureCityObj));
+      }
+      if (field === 'destinationCityObj') {
+        this.$set(route, 'destinationCityId', getCityId(route.destinationCityObj));
+      }
       this.emitChange(field);
     },
 
     // 触发变更
     emitChange(fieldName) {
+      this.syncSequenceNumbers();
+      this.syncCityIds();
       const data = this.routeList;
       this.$emit('input', JSON.stringify(data));
+    },
+
+    // 同步序号，保证数据顺序与界面显示顺序一致
+    syncSequenceNumbers() {
+      this.routeList.forEach((route, index) => {
+        this.$set(route, 'sn', index + 1);
+      });
+    },
+    // 同步出发地和目的地城市 ID，保证传参与城市选择器值一致
+    syncCityIds() {
+      this.routeList.forEach(route => {
+        this.$set(route, 'departureCityId', getCityId(route.departureCityObj));
+        this.$set(route, 'destinationCityId', getCityId(route.destinationCityObj));
+      });
     },
     // 校验行程数据（FormMaking 可通过 ref 调用）
     validate() {

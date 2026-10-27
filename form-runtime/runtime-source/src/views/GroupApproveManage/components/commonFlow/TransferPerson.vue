@@ -366,37 +366,48 @@ export default {
 </script>
 
 <style scoped lang="scss">
-// ::v-deep .el-dialog__body {
-//   max-height: 600px;
-// }
+// 穿梭组件：相对父容器高度 flex 填满，左右同高（第一版自适应）
 .roleHight {
   background: #8CC5FF;
-  // color: #fff;
 }
 .transe-div {
-  // height: calc(100% - 50px);
-  height: calc(100vh - 460px);
+  height: 100%;
+  min-height: 420px;
+  max-height: calc(100vh - 220px);
+  box-sizing: border-box;
   overflow: hidden;
   margin: 15px 0;
   padding: 10px;
   display: flex;
   justify-content: center;
+  align-items: stretch;
 
   .left-select-person {
     width: 400px;
     border: 1px solid rgb(235, 238, 245);
     border-radius: 5px;
     height: 100%;
+    min-height: 0;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+
+    > div:first-child {
+      flex-shrink: 0;
+    }
 
     .el-tree {
-      height: calc(100% - 80px);
+      flex: 1 1 auto;
+      min-height: 0;
+      height: auto;
       overflow: auto;
     }
   }
 
   .trans-bt {
     width: 100px;
+    flex-shrink: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -411,26 +422,44 @@ export default {
     width: 400px;
     border: 1px solid rgb(235, 238, 245);
     border-radius: 5px;
-    overflow: auto;
-    height: calc(100vh - 480px);
-    // height: calc(100% - 60px);
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+
+    > div:first-child {
+      flex-shrink: 0;
+    }
+
+    .choosed-checked {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+    }
 
     .el-checkbox {
       margin-right: 0;
       width: 100%;
       margin-bottom: 3px;
     }
-    .el-checkbox.is-checked{
+    .el-checkbox.is-checked {
       background: aliceblue;
     }
   }
 }
-.choosed-checked .el-checkbox__input{
+.choosed-checked .el-checkbox__input {
   display: none;
 }
 ::v-deep {
   .select-person-dialog .el-dialog__body {
     height: 540px;
+    max-height: calc(90vh - 120px);
+    box-sizing: border-box;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
 }
 </style>

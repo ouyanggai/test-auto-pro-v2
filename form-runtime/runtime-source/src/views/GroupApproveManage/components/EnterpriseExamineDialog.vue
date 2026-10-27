@@ -29,7 +29,8 @@
               v-if="isShowAttachList" />
             <!-- 公共关联流程 -->
             <FormCommonFlowPost ref="flowListSelect" :flowInstanceBizRelevanceList="flowInstanceBizRelevanceList" :initiatorId="initiatorId"
-            :enableData="enableData" :isExamine="isExamine" :isReInitiate="isReInitiate" :btnVisible="btnVisible"/>
+            :enableData="enableData" :isExamine="isExamine" :isReInitiate="isReInitiate" :btnVisible="btnVisible"
+            @update:flowInstanceBizRelevanceList="handleFlowInstanceBizRelevanceListUpdate"/>
             <!-- <div @click="test">test</div> -->
             <!-- || visible -->
             <!-- print-read="true" -->
@@ -122,6 +123,7 @@ import generalList from '@/components/generalList.vue'
 import { Print as $print } from '@/utils/print.js';
 import { deepClone } from '../../../utils';
 import CheckFlowNodeDetail from './CheckFlowNodeDetail.vue';
+import moment from 'moment';
 export default {
   name: 'EnterpriseExamineDialog',
   components: { AttachList, DyTable, EnterpriseExamineOpinion, FlowLog, Postscript, IndicatorHeaderDialog, ApprovalFormDialog,
@@ -1179,6 +1181,12 @@ export default {
     updateList(){
       this.$emit('success');
     },
+    // 同步更新 flowInstanceBizRelevanceList，保留非commonFlow条目
+    handleFlowInstanceBizRelevanceListUpdate(commonFlowItems) {
+      const nonFlowItems = (this.flowInstanceBizRelevanceList || [])
+        .filter(item => item.otherBiz !== 'commonFlow');
+      this.flowInstanceBizRelevanceList = [...nonFlowItems, ...(commonFlowItems || [])];
+    },
     postExamine() {
       // this.bindBatchFileByIds();
       this.$emit('update:visible', false);
@@ -1331,7 +1339,14 @@ export default {
       // const enableData = this.enableData = this.flowNodeProxyId ? await this.findApprovePermission() : [];
       const allPowerFieldData = this.flowNodeProxyId ? await this.findApprovePermission() : [];
       const enableData = this.enableData = allPowerFieldData.enableData;
-      const hideData = allPowerFieldData.hideData;// 隐藏字段注释
+      const hideData = allPowerFieldData.hideData || [];
+
+      if (this.selectFlowType == 'contract_invoicing' &&
+        this.btnVisible &&
+        enableData.includes('invoiceTime') &&
+        !this.editData.invoiceTime) {
+        this.$set(this.editData, 'invoiceTime', moment().format('YYYY-MM-DD'));
+      }
 
       // console.log('enableData1',enableData)
       console.log('hideData1',hideData)
@@ -1344,13 +1359,16 @@ export default {
         },
         async (res) => {
           if (res.isSuccess) {
-            let templateData = editData.formProxyData ? editData.formProxyData.templateData : res.data.templateData;
+            let templateData = editData.formProxyData?.templateData || res.data.templateData;
             // let copyTemplateData = JSON.parse(res.data.templateData);
             let copyTemplateData = JSON.parse(templateData);
+            if (!copyTemplateData) {
+              copyTemplateData = { list: [] };
+            }
             this.setRequireByPermission(copyTemplateData.list);
             this.setAutoAuditInfoFieldStyle(copyTemplateData.list);
             this.jsonData = JSON.parse(JSON.stringify(copyTemplateData));
-            const fieldsTemplateList = editData.formProxyData ? editData.formProxyData.fieldsTemplateList : res.data.fieldsTemplateList;
+            const fieldsTemplateList = editData.formProxyData?.fieldsTemplateList || res.data.fieldsTemplateList;
             // const fieldsTemplateList = res.data.fieldsTemplateList;
             const disabledData = fieldsTemplateList.map(item => {
               return (item.englishName ?? '').replaceAll('_$$_', '.');
@@ -1673,6 +1691,7 @@ export default {
             }
           });
           this.$set(item, 'type', 'textarea');
+          this.$set(item.options, 'readonly', true);
           this.$set(item.options, 'customClass', classList.join(' '));
           this.$set(item.options, 'autosize', true);
           this.$set(item.options, 'rows', Math.max(Number(item.options.rows) || 2, 2));
@@ -1787,6 +1806,7 @@ export default {
         if (type == 'no_pass') {
           param = {
             data: {
+              id: this.flowInstanceId,
               jobTaskId: this.jobTaskId,
               auditRecord: {
                 auditStatus: type,
@@ -1801,13 +1821,18 @@ export default {
           if (flag) {
             param = {
               data: {
+                id: this.flowInstanceId,
                 jobTaskId: this.jobTaskId,
                 auditRecord: {
                   auditStatus: type,
                   executeDesc: this.approveForm.approveMessage
                 }
               },
-              nextAuditorList: this.nextAuditorList,
+              nextAuditorList: this.nextAuditorList.map(item => ({
+                ...item,
+                auditDetailType: item.auditDetailType || 'personnel',
+                nodeProxyId: item.nodeProxyId || this.nextNodeProxyId
+              })),
               formDataMongoVo: {
                 data: value
               }
@@ -1815,6 +1840,7 @@ export default {
           } else {
             param = {
               data: {
+                id: this.flowInstanceId,
                 jobTaskId: this.jobTaskId,
                 auditRecord: {
                   auditStatus: type,
@@ -1828,7 +1854,7 @@ export default {
           }
         }
         this.$axios.post(
-          Api.qualityManage.submitTask,
+          Api.newWorkflowCenter.flowAudit,
           param,
           (res) => {
             if (res.isSuccess) {

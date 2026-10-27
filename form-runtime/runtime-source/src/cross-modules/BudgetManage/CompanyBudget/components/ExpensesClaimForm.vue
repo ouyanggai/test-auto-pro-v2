@@ -1,4 +1,4 @@
-﻿<!--
+<!--
  * @Descripttion: 费用报销单-增查改
  * @Author: zhengzetao
  * @Date: 2022-06-15
@@ -14,7 +14,7 @@
     <h3 style="text-align:center;">费用报销单</h3>
     <!-- <h2 style="text-align:center;margin-bottom:20px">{{ selectFlowName }}</h2> -->
     <!-- <el-cascader v-model="testValue" :options="testOptions"></el-cascader> -->
-    <div style="height:21px;line-height:21px;"><span v-if="operaType == 'add'">当前公司：{{ currentCompany }}</span></div>
+    <div style="height:21px;line-height:21px;"><span v-if="operaType == 'add' || (operaType == 'edit' && infoForm.businessStatus == '0')">当前公司：{{ currentCompany }}</span></div>
     <el-form :model="infoForm" :rules="infoFormRules" ref="infoForm" label-width="137px" label-position="right"
       id="expendForm">
       <el-card shadow="never">
@@ -288,7 +288,7 @@
               <el-table-column label="税前金额" width="90px">
                 <template slot-scope="scope">
                   <el-input-number v-model="scope.row.beforeTax" :min="0.00" :precision="2" :step="0.1"
-                        :controls="false" :disabled="scope.row.isTax == '1' || isDisabled('expendDetailType')" style="width:100%;flex:1;text-align:left;height:35px;line-height:35px;"
+                        :controls="false" :disabled="isExpendDetailNumDisabled(scope.row.isTax == '1', 'expendDetailNum')" style="width:100%;flex:1;text-align:left;height:35px;line-height:35px;"
                         @input="inputDetailTax(scope.$index)" v-focusSelect >
                       </el-input-number>
                 </template>
@@ -297,7 +297,7 @@
                 <template slot-scope="scope">
                     <div style="display: flex;">
                       <el-input-number v-model="scope.row.tax" :min="0.00" :precision="2" :step="0.1" :controls="false"
-                      :disabled="scope.row.isTax == '1' || isDisabled('expendDetailType')" style="width:100%;flex:1;text-align:left;height:35px;line-height:35px;"
+                      :disabled="isExpendDetailNumDisabled(scope.row.isTax == '1', 'expendDetailNum')" style="width:100%;flex:1;text-align:left;height:35px;line-height:35px;"
                         @input="inputDetailTax(scope.$index)" v-focusSelect>
                       </el-input-number>
                     </div>
@@ -330,7 +330,7 @@
                     :rules="infoFormRules.expenseDetailList.expendDetailNum">
                     <div style="display: flex;width:100%;">
                       <el-input-number v-model="scope.row.money" :min="0.00" :precision="2" :step="0.1"
-                        :controls="false" :disabled="scope.row.isTax == '2' || isDisabled('expendDetailNum')"
+                        :controls="false" :disabled="isExpendDetailNumDisabled(scope.row.isTax == '2', 'expendDetailNum')"
                         style="flex-grow:1;width:130px;height:35px;line-height:35px;text-align:left;" v-focusSelect>
                       </el-input-number>
                     </div>
@@ -774,10 +774,10 @@
           <td style="overflow:hidden;word-wrap: break-word">
             {{ obj.remark }}
           </td>
-          <td>
-            <!-- <div style="display:flex;flex-wrap:wrap;">
-              <div v-for="val in obj.uploadFileList" :key="val.id" style="margin:0 5px 5px 0;">{{ val.name }}</div>
-            </div> -->
+          <td style="overflow:hidden;">
+            <div style="display:flex;flex-wrap:wrap;">
+              <div v-for="val in (obj.uploadFileList||[])" :key="val.id" style="margin:0 5px 5px 0;word-break:break-all;">{{ val.name }}</div>
+            </div>
           </td>
         </tr>
         <tr>
@@ -1476,6 +1476,23 @@ export default {
         }
       }
     },
+    /**
+     * 判断费用明细字段是否禁用
+     * @param {boolean} condition - 字段自身的禁用条件（如 isTax=='1'）
+     * @param {string} permissionKey - 权限配置key（如 'expendDetailType'）
+     * @returns {boolean} true=禁用
+     *
+     * 优先级：权限控制 > 字段条件
+     * 先判断权限是否禁用（expendDetailType 是主控权限）
+     * 权限不禁用，再根据字段自身条件决定
+     */
+    isExpendDetailNumDisabled(condition, permissionKey) {
+      if(this.isDisabled(permissionKey)) {
+        return true
+      } else {
+        return condition
+      }
+    },
     changeTax(val,index){
       // 切换时清空当前行数据
       this.$set(this.infoForm.expenseDetailList[index], 'beforeTax', undefined)
@@ -1556,7 +1573,6 @@ export default {
       let find = this.companyDepartList.find(el=>el.id == val)
       if(find){
         // this.infoForm.expenseDetailList[index] = find.departmentName
-        // console.log('this.infoForm.expenseDetailList',this.infoForm.expenseDetailList)
         this.$set(this.infoForm.expenseDetailList[index],'depName',find.departmentName)
 
       }
@@ -1585,12 +1601,10 @@ export default {
       }else{
         this.$message.error('请选择至少一条流程')
       }
-      // console.log('this.$refs.dyTable.selectDatas',this.$refs.dyAssetsTable.selectDatas)
 
       // this.infoForm.accountDetailedVoList = deepClone(this.$refs.dyTable.selectDatas)
     },
     tabClick(val){
-      // console.log('val',val)
       this.fetchAssetsData()
     },
     showAssetsList(){
@@ -1684,6 +1698,7 @@ export default {
       this.infoForm.expenseBudgetList[index].allChildId = ''
       this.infoForm.expenseBudgetList[index].departmentName = ''
       this.infoForm.expenseBudgetList[index].budgetName = ''
+      this.$set(this.infoForm.expenseBudgetList[index], 'budgetYear', '')
       this.getDepartmentList(index)
     },
     // fetchLogData() {
@@ -1723,6 +1738,8 @@ export default {
           (res) => {
             if (res.isSuccess) {
               resolve(res.data.data);
+            } else {
+              resolve({});
             }
           }
         );
@@ -1830,6 +1847,15 @@ export default {
     },
     repayChange() {
       this.infoForm.accountDetailedVoList = []
+      // 确保当前 repay 模式需要的入账信息行都存在
+      const hasNormalRow = this.infoForm.expenseInAccountInfoList.some(item => item.name !== '冲借（请）款')
+      const hasRepayRow = this.infoForm.expenseInAccountInfoList.some(item => item.name === '冲借（请）款')
+      if ((this.infoForm.repay === 'repayRequest' || this.infoForm.repay === 'repayLoan') && !hasRepayRow) {
+        this.infoForm.expenseInAccountInfoList.push({ type: 2, name: '冲借（请）款', openingBank: '', account: '', money: '' })
+      }
+      if ((this.infoForm.repay === null || this.infoForm.repay === 'repayLoan') && !hasNormalRow) {
+        this.infoForm.expenseInAccountInfoList.unshift({ type: 0, name: '', openingBank: '', account: '', money: '' })
+      }
     },
     removeAccountDetailed(index) {
       this.$confirm('确认删除', '提示').then(() => {
@@ -1837,9 +1863,13 @@ export default {
       }).catch(() => { })
     },
     confirmList() {
-      this.infoForm.accountDetailedVoList = deepClone(this.$refs.dyTable.selectDatas)
+      const dialogItems = deepClone(this.$refs.dyTable.selectDatas || [])
+      const dialogIds = dialogItems.map(item => item.processId)
+      const manualItems = this.infoForm.accountDetailedVoList.filter(
+        item => !dialogIds.includes(item.processId)
+      )
+      this.infoForm.accountDetailedVoList = [...manualItems, ...dialogItems]
       this.handleCloseRepay()
-      // console.log('this.$refs.dyTable.selectDatas',this.$refs.dyTable.selectDatas)
     },
     openRepay() {
       if (!this.infoForm.expenseCompanyId) {
@@ -1852,7 +1882,6 @@ export default {
     },
     //搜索固定资产列表
     fetchAssetsData(){
-      // console.log('this',this.assetsTab)
       // return
       var data = {},apiUrl = Api.qualityManage.findList
       if(this.assetsTab == 'backlog'){
@@ -1957,16 +1986,24 @@ export default {
             let auditWay = this.infoForm.repay == 'repayLoan' ? 'expense_loan' : 'request_funds'
             let flowList = await this.getInstanceId(ids, auditWay,'end')
             this.repayList = deepClone(flowList)
-            tableData = list.map(el => {
+            tableData = await Promise.all(list.map(async el => {
               let id = el.id
               let find = flowList.find(item => {
                 return item.flowInstanceBizRelevanceList.find(el => el.otherBizId == id)
               })
               let processId = find.id
               let alreadyMoney = math.subtract(el.amountRecordVo['payMoney'], el.amountRecordVo['notMoney'])// - item['freezeMoney']
+              const formData = await this.getFormData(processId).catch(() => ({}));
+              let payName;
+              if(this.infoForm.repay == 'repayRequest') {
+                payName = formData?.applicationFundsVo_payName??''
+              } else if(this.infoForm.repay == 'repayLoan') {
+                payName = formData?.expenseInAccountInfoList?.length ? formData.expenseInAccountInfoList[0].name : ''
+              }
               let obj = {
                 id,
                 payCompanyName: el.applicationFundsVo.payCompanyName,
+                payName,
                 processId,
                 flowName: find.name,
                 initiator: find.initiator,
@@ -1979,7 +2016,7 @@ export default {
                 max: math.subtract(el.amountRecordVo.notMoney, el.amountRecordVo.freezeMoney)
               }
               return obj
-            })
+            }))
           }
           this.pagination.total = res?.total || 0
           this.tableData = tableData
@@ -2059,10 +2096,8 @@ export default {
     },
     async printPage(list) {
       this.printList = list
-      // console.log('data',data)
       // return
       if(this.printList.indexOf('发起人附言')>-1 )await this.getPostScriptList()
-      // console.log('flowProxyId',this.flowProxyId)
       // return
       let find = this.companyList.find(item => item.id == this.infoForm.expenseCompanyId)
       let printObj = {}
@@ -2095,13 +2130,11 @@ export default {
       printObj.expenseBudgetList = expenseBudgetList
       printObj.accountDetailedVoList = deepClone(this.infoForm.accountDetailedVoList)
       this.printObj = printObj
-      // console.log('printObj',printObj)
       // return
       this.$nextTick(() => {
 
         var iframe = document.querySelector("#print-iframe");
         if (iframe) document.body.removeChild(iframe)
-        // console.log('iframe',iframe)
         // if(!iframe){
         var el = document.querySelector("#printcontent");
         iframe = document.createElement('IFRAME');
@@ -2158,16 +2191,16 @@ export default {
                 for (let childKey in mainRule[key]) {
                   if (enableList.indexOf(childKey) == -1) {
                     delete this.infoFormRules[key][childKey]
-                  }
-                }
+              }
+              }
               } else if (key == 'attachmentCount') {
                 if (enableList.indexOf('attachmentNum') == -1) {
                   delete this.infoFormRules[key]
-                }
+              }
               } else {
                 if (enableList.indexOf(key) == -1) {
                   delete this.infoFormRules[key]
-                }
+              }
               }
             }
             this.enableData = enableList;
@@ -2198,7 +2231,7 @@ export default {
               for (let childKey in mainRule[key]) {
                 if (enableList.indexOf(childKey) == -1) {
                   delete this.infoFormRules[key][childKey]
-                }
+              }
               }
             } else if (key == 'attachmentCount') {
               if (enableList.indexOf('attachmentNum') == -1) {
@@ -2251,8 +2284,8 @@ export default {
                     // fileId: x.fileId,
                     percentage: 100,
                     status: 'uploaded'
-                  };
-                });
+              };
+              });
               } else {
                 arr = [];
                 // arr = null;
@@ -2287,14 +2320,14 @@ export default {
               res.data.expenseDetailList.forEach(el=>{
                 let relationFileDatas = el?.relationFileDatas || []
                 let list = relationFileDatas.map(x=>{
-                    return {
+                  return {
                       absolutelyFileUrl: x.fileUrl,
                       name: x.originFileName,
                       id: x.fileId, // 这个接口的fileId才是文件id
                       percentage: 100,
                       status: 'uploaded'
                     };
-                })
+              })
                 el.isTax = '1' //非增值税
                 el.tax = undefined
                 if(el.sing){
@@ -2305,8 +2338,8 @@ export default {
                     el.beforeTax = find.money
                     el.tax = find.tax
                     el.money = find.totalAmount
-                  }
-                }
+              }
+              }
                 this.$set(el, 'uploadFileList', list);
               })
               // for (let i = 0; i < res.data.expenseDetailList.length; i++) {
@@ -2323,20 +2356,42 @@ export default {
               res.data.expenseDetailList.sort((a, b) => a.sort - b.sort)
               res.data.expenseInAccountInfoList.sort((a, b) => a.sort - b.sort)
               Object.assign(this.infoForm, res.data);
-              this.queryYear = ''
-              if(this.infoForm.expenseBudgetList.length){
-                let id = this.infoForm.expenseBudgetList[0]?.budgetId
-                this.queryYear = await this.getCostTypeById(id)
+              // 逐行按各自预算ID反查年度；反查不到回退当前年度，避免传空年度查出全部年份的预算
+              for (const x of this.infoForm.expenseBudgetList) {
+                const year = x.budgetId ? await this.getCostTypeById(x.budgetId) : ''
+                this.$set(x, 'budgetYear', year || this.queryYear)
               }
               this.infoForm.accountDetailedVoList = res?.data?.accountDetailedVoList || []
+              console.log('加载accountDetailedVoList[0]:', JSON.stringify(this.infoForm.accountDetailedVoList[0]), 'keys:', Object.keys(this.infoForm.accountDetailedVoList[0]||{}))
               this.infoForm.accountDetailedVoList.forEach(item => {
                 item.freezeMoney = item.amountRecordVo.freezeMoney
+                // API返回的payName可能为null，从sourceExpenseInAccountInfoList[0].name补填
+                if (!item.payName && item.sourceExpenseInAccountInfoList?.length) {
+                  item.payName = item.sourceExpenseInAccountInfoList[0].name || ''
+                }
               })
               this.infoForm.accountDetailedVoList.sort((a, b) => a.sort - b.sort)
               this.infoForm.taxInfoList.sort((a, b) => a.sort - b.sort)
+              // 先根据已保存的数据推算冲借（请）款模式
+              const savedHasNormalRow = this.infoForm.expenseInAccountInfoList.some(item => item.name !== '冲借（请）款')
+              const savedHasRepayRow = this.infoForm.expenseInAccountInfoList.some(item => item.name === '冲借（请）款')
+              const savedHasRelatedBill = this.infoForm.accountDetailedVoList.length > 0
+              const savedHasRepayMoney = this.infoForm.expenseInAccountInfoList.some(item => {
+                return item.name === '冲借（请）款' && Number(item.money || 0) > 0
+              })
               this.infoForm.repay = null
-              if (this.infoForm.accountDetailedVoList?.length) {
-                this.infoForm.repay = res.data.state == 1 ? 'repayLoan' : 'repayRequest'
+              if (savedHasRepayRow && !savedHasNormalRow) {
+                this.infoForm.repay = 'repayRequest'
+              } else if (savedHasRepayRow && savedHasNormalRow &&
+                (this.infoForm.businessStatus == '0' || savedHasRelatedBill || savedHasRepayMoney)) {
+                this.infoForm.repay = 'repayLoan'
+              }
+              // 确保两行都存在，与新增初始状态一致
+              if (!this.infoForm.expenseInAccountInfoList.some(item => item.name !== '冲借（请）款')) {
+                this.infoForm.expenseInAccountInfoList.unshift({ type: 0, name: '', openingBank: '', account: '', money: '' })
+              }
+              if (!this.infoForm.expenseInAccountInfoList.some(item => item.name === '冲借（请）款')) {
+                this.infoForm.expenseInAccountInfoList.push({ type: 2, name: '冲借（请）款', openingBank: '', account: '', money: '' })
               }
               this.infoForm.expenseCompanyId = this.infoForm.expenseCompanyId ? this.infoForm.expenseCompanyId : this.infoForm.companyId
               this.findUserDetail(res.data.createrId)
@@ -2351,17 +2406,16 @@ export default {
                     id,
                     flag:'enable',
                     type
-                  }
+              }
                   this.$axios.post(Api.user.findDeptVosByRefId,{data},res=>{
                     if(res.isSuccess){
                       this.companyDepartList = res?.data || []
                     }
-                  })
-                }
+              })
+              }
               }
 
               resolve();
-              // console.log('this.infoForm', this.infoForm);
             } else {
               this.$message.error(res.message);
             }
@@ -2373,7 +2427,7 @@ export default {
       return new Promise((resolve,reject)=>{
         this.$axios.post(Api.budgetManage.getCostTypeById,{data:{id}}).then(res=>{
           if(res.isSuccess){
-            resolve(res.data.annually)
+            resolve(res.data?.annually||'')
           }else{
             resolve('')
           }
@@ -2437,7 +2491,6 @@ export default {
         this.$axios.post(Api.budgetManage.projectCompany, data, res => {
           let dataList = res?.data?.dataList || []
           resolve(dataList)
-          // console.log('res',res)
         })
       })
     },
@@ -2474,7 +2527,6 @@ export default {
                 this.centralizedApiVos = find.centralizedApiVos[0];
                 this.projectBudgetCentralizedApiVos = find.projectBudgetCentralizedApiVos
                 let departmentList = this.generateDepartOption();
-                // console.log('departmentList',departmentList)
                 resolve(departmentList)
               }
             } else {
@@ -2527,7 +2579,7 @@ export default {
       return new Promise((resolve, reject) => {
         let data = {
           data: {
-            annually: this.queryYear,//new Date().getFullYear(),
+            annually: this.infoForm.expenseBudgetList[index]?.budgetYear || this.queryYear,//new Date().getFullYear(),
             companyId,//: infoForm.expenseBudgetList//this.infoForm.chooseCompanyId,
             stringList: [1, 2],
             listString: [1, 3]
@@ -2675,7 +2727,6 @@ export default {
     },
 
     getExpendDetailSummaries(param) { // 费用明细表格合计
-      // console.log(param);
       const { columns, data } = param;
       const sums = [];
       columns.forEach((column, index) => {
@@ -2719,7 +2770,6 @@ export default {
       this.infoForm.taxInfoList.splice(index, 1);
     },
     getValueAddedTaxSummaries(param) { // 增值税专票信息表格合计
-      // console.log(param);
       const { columns, data } = param;
       const sums = [];
       columns.forEach((column, index) => {
@@ -2747,7 +2797,6 @@ export default {
 
     // 入账信息表格操作
     getAccountingInfoSummaries(param) { // 入账信息表格合计
-      // console.log(param);
       const { columns, data } = param;
       const sums = [];
       columns.forEach((column, index) => {
@@ -2797,7 +2846,6 @@ export default {
         }
         formRef.validate(async valid => {
           if (valid) {
-            // return;
             // let taxInfo = infoForm.taxInfoList
             let expenseBudgetListTotalMoney = 0, expenseDetailListTotalMoney = 0, expenseInAccountInfoListTotalMoney = 0
             param = {
@@ -2823,13 +2871,12 @@ export default {
                     alreadyMoney: item.alreadyMoney,
                     notMoney: item.notMoney,
                     thisMoney: item.thisMoney,
-                  }
-                })
+              }
+              })
               },
               expenseBudgetList: infoForm.expenseBudgetList.map((x, index) => {
                 let budgetId = x.allChildId.length > 1 ? x.allChildId[x.allChildId.length - 1] : ''
                 expenseBudgetListTotalMoney = math.add(expenseBudgetListTotalMoney, Number(x.money))
-                // console.log('expenseBudgetListTotalMoney',expenseBudgetListTotalMoney)
                 const obj = {
                   companyNumber: x.companyNumber,
                   allChildId: x.allChildId.join(),
@@ -2840,16 +2887,16 @@ export default {
                   type: 2,//: infoForm.projectId ? 1 : 2 ,// 选了项目传1
                   remark: x.remark,
                   sort: index,
-                };
+              };
                 //根据归口id查找归口信息，判断是项目归口还是公司归口
                 let find = this.getBudgetInfo(budgetId)
                 if (find.isProject && find.projectId) {
                   obj.type = 1
                   obj.projectId = find.projectId
-                }
+              }
                 if (this.operaType == 'edit') {
                   obj.id = x.id;
-                }
+              }
                 return obj;
               }),
               taxInfoList: infoForm.taxInfoList.map((el, index) => {
@@ -2870,10 +2917,10 @@ export default {
                   attachmentIds: x.uploadFileList.map(x => x.id).join(','),
                   invoiceType: x.invoiceType,
                   sort: index
-                }
+              }
                 if (this.operaType == 'edit') {
                   obj.id = x.id;
-                }
+              }
                 return obj;
               }),
               expenseInAccountInfoList: this.filteredAccountInfoList.map((item, index) => {
@@ -2887,29 +2934,45 @@ export default {
               this.$parent.$parent.$parent.submitLoading = false
               this.$message.error('费用预算类型金额合计与费用明细金额合计不一致')
               resolve({flag:false})
+              return
             }
             // if (expenseInAccountInfoListTotalMoney > 0) {//入账信息
             if (Number(expenseInAccountInfoListTotalMoney) != Number(expenseDetailListTotalMoney)) {
               this.$parent.$parent.$parent.submitLoading = false
               this.$message.error('入账信息金额与费用明细金额合计不一致')
               resolve({flag:false})
+              return
             }
             // }
             if (this.infoForm.repay && !this.infoForm?.accountDetailedVoList?.length) {
               this.$parent.$parent.$parent.submitLoading = false
               this.$message.error('请选择请款单或者借款单')
               resolve({flag:false})
+              return
             }
             // 冲请款时校验所有选中请款流程的收款人是否一致
-            if (this.infoForm.repay == 'repayRequest' && this.infoForm?.accountDetailedVoList?.length > 1) {
-              const payeeList = this.infoForm.accountDetailedVoList.map(item => item.payCompanyName || '')
+            if ((this.infoForm.repay == 'repayRequest'||this.infoForm.repay == 'repayLoan') && this.infoForm?.accountDetailedVoList?.length > 1) {
+              const payeeList = this.infoForm.accountDetailedVoList.map(item => item.payName || item.collectionCompany || item.payCompanyName || '')
               const firstPayee = payeeList[0]
               const allSame = payeeList.every(name => name === firstPayee)
               if (!allSame) {
                 this.$parent.$parent.$parent.submitLoading = false
-                this.$message.error('关联请款单中的请款流程收款人不一致，请检查后重新选择')
+                this.$message.error(this.infoForm.repay == 'repayRequest'?'关联请款单中的请款流程收款人不一致，请检查后重新选择':'关联借款单中的借款流程入账信息中单位或姓名不一致，请检查后重新选择')
                 resolve({flag:false})
                 return
+              }
+            }
+            // 冲借款时校验关联借款单的入账信息与当前表单入账信息中第一条单位或姓名是否一致
+            if (this.infoForm.repay == 'repayLoan' && this.infoForm?.accountDetailedVoList?.length > 0) {
+              const formPayeeName = this.infoForm.expenseInAccountInfoList.find(item => item.name !== '冲借（请）款')?.name
+              if (formPayeeName) {
+                const loanPayee = this.infoForm.accountDetailedVoList[0].payName || this.infoForm.accountDetailedVoList[0].collectionCompany || this.infoForm.accountDetailedVoList[0].payCompanyName || ''
+                if (loanPayee !== formPayeeName) {
+                  this.$parent.$parent.$parent.submitLoading = false
+                  this.$message.error('关联借款单的入账信息中单位或姓名与当前表单入账信息不一致，请检查后重新选择')
+                  resolve({flag:false})
+                  return
+                }
               }
             }
             if (this.infoForm.repay == 'repayRequest') {
@@ -3066,12 +3129,10 @@ export default {
         let departmentId = allChildId[0]
         let childId = allChildId[1]
         let find = thisDepartmentList.find(item => item.id == departmentId)
-        // console.log('find',find)
         if (find && find.childrenList) {
           // {{ scope.row.departmentName }} / {{ scope.row.budgetName }}
           el.departmentName = find.name
           let childFind = find.childrenList.find(item => item.id == childId)
-          // console.log('childFind',childFind)
           if (childFind) {
             this.$set(childFind, 'disabled', true)
             el.budgetName = childFind.name
@@ -3486,4 +3547,3 @@ $bc: rgb(153, 153, 153);
   }
 }
 </style>
-

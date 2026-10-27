@@ -270,7 +270,7 @@ export default {
           // nextNodeName: '',
           // flowNodeType: '',
           // nextNodeProxyId: '',
-          // flowStatus: 'enable',
+          flowStatus: 'enable',
           // auditWay: row.type,
           useScope: 'invest',
           groupId: data ? data.id : this.treeDataRow.id,

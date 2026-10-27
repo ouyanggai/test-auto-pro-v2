@@ -1,25 +1,32 @@
-// sidebar
-$menuText:#bfcbd9;
-$menuActiveText:#409EFF;
-$subMenuActiveText:#f4f4f5; //https://github.com/ElemeFE/element/issues/12951
-
-$menuBg:#304156;
-$menuHover:#263445;
-
-$subMenuBg:#1f2d3d;
-$subMenuHover:#001528;
-
+// ─────────────────────────────────────────────────────────────────────────
+// 导航外壳的 SCSS 侧入口
+//
+// 配色 token 本身（--nav-*）在 nav-themes.scss 里定义，不在这里 ——
+// 这个文件会被 Logo.vue / Navbar.vue / layout 的 scoped <style> 各 @import 一次，
+// 把 :root { --nav-*: … } 放这儿的话会被复制进四份产物 CSS。
+// nav-themes.scss 只被 assets/styles/index.scss 引入一次，那边才是它该待的地方。
+//
+// 这里只留两样：
+//   1. $sideBarWidth —— 布局尺寸，不参与主题切换，保持 SCSS 变量
+//   2. :export —— 给 JS 用的调色板出口
+// ─────────────────────────────────────────────────────────────────────────
 $sideBarWidth: 210px;
 
 // the :export directive is the magic sauce for webpack
-// https://www.bluematador.com/blog/how-to-share-variables-between-js-and-sass
+// https://www.bluematcher.com/blog/how-to-share-variables-between-js-and-sass
+//
+// 这里刻意吐 var(--x) 字符串而不是真实色值：Sidebar/index.vue 把这三个值传给
+// el-menu 的 background-color / text-color / active-text-color，element-ui 会把它
+// 原样写成元素的行内样式（menu.vue 的 style={{backgroundColor}}、menu-item.vue 的
+// itemStyle、submenu.vue 的 titleStyle 都是）。写 var() 的话行内样式自己就跟着主题
+// 走了，不用再为这几处打 !important 去压。Vue 的 :style 不校验值，原样下发。
 :export {
-  menuText: $menuText;
-  menuActiveText: $menuActiveText;
-  subMenuActiveText: $subMenuActiveText;
-  menuBg: $menuBg;
-  menuHover: $menuHover;
-  subMenuBg: $subMenuBg;
-  subMenuHover: $subMenuHover;
+  menuText: var(--nav-text);
+  menuActiveText: var(--nav-active-text);
+  subMenuActiveText: var(--nav-active-text);
+  menuBg: var(--nav-bg);
+  menuHover: var(--nav-hover);
+  subMenuBg: var(--nav-bg-sub);
+  subMenuHover: var(--nav-hover-sub);
   sideBarWidth: $sideBarWidth;
 }

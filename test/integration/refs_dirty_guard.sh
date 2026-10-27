@@ -6,6 +6,7 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 test_root="$(mktemp -d "${project_root}/.runtime/refs-dirty-test.XXXXXX")"
 seed_repo="${test_root}/seed"
 bare_remote="${test_root}/remote.git"
+manifest_remote="$(cygpath -m "${bare_remote}")"
 refs_root="${test_root}/refs"
 manifest="${test_root}/manifest.tsv"
 reference_doc="${test_root}/REFERENCE_CODE.md"
@@ -18,7 +19,7 @@ git -C "${seed_repo}" -c user.name='测试' -c user.email='test@example.invalid'
 git clone -q --bare "${seed_repo}" "${bare_remote}"
 
 for index in {1..13}; do
-  printf 'repo-%02d\trepo\t%s\tmaster\n' "${index}" "${bare_remote}" >> "${manifest}"
+  printf 'repo-%02d\trepo\t%s\tmaster\n' "${index}" "${manifest_remote}" >> "${manifest}"
 done
 
 REFS_ROOT="${refs_root}" REFS_MANIFEST="${manifest}" REFS_DOC="${reference_doc}" \

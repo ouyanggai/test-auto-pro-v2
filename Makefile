@@ -1,10 +1,15 @@
-.PHONY: refs-sync refs-status form-runtime-sync form-runtime-status plan-db-config-sync flow-source-sync flow-source-status flow-source-page logs-viewer logs-viewer-stop
+.PHONY: refs-sync refs-sync-selected refs-status form-runtime-sync form-runtime-status plan-db-config-sync flow-source-sync flow-source-status flow-source-page logs-viewer logs-viewer-stop
 
 refs-sync:
 	@./scripts/reference-repos.sh sync
 
 refs-status:
 	@./scripts/reference-repos.sh status
+
+# refs-sync-selected 仅安全迁移/快进指定参考仓库，并只刷新该仓库的参考版本行。
+refs-sync-selected:
+	@test -n "$(REPOSITORIES)" || (echo "请通过 REPOSITORIES 指定参考仓库名" >&2; exit 1)
+	@REFS_REPOSITORIES="$(REPOSITORIES)" ./scripts/reference-repos.sh sync
 
 # flow-source 按 executor-service/flow-source-manifest.json 直接 git 同步，不再复制本机静态目录。
 flow-source-sync:

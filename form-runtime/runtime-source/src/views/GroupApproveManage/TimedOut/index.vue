@@ -227,6 +227,17 @@ export default {
     },
     previewHandle(row) {
       // 根据Finished组件实现查看功能
+      // 如果 auditWay 为空，尝试从 flowInstanceBizRelevanceList 中推断
+      if (!row.auditWay && row.flowInstanceBizRelevanceList?.length) {
+        const pageTypes = this.$store.state.settings.budgetPagesName || {}
+        for (const item of row.flowInstanceBizRelevanceList) {
+          if (item.otherBiz && (pageTypes[item.otherBiz] || item.otherBiz === 'expense_budget')) {
+            row.auditWay = item.otherBiz
+            row.formExist = pageTypes[item.otherBiz] ? pageTypes[item.otherBiz].component !== undefined : true
+            break
+          }
+        }
+      }
       this.selectFlowType = row.auditWay
       this.formExist = row.formExist
 

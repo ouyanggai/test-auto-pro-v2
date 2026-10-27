@@ -4,6 +4,8 @@
 // @import "./transition.scss";
 @import "./element-ui.scss";
 @import "./sidebar.scss";
+// 导航外壳的配色 token（--nav-*），sidebar.scss / Logo.vue / Navbar.vue 都通过 var() 取用
+@import "./nav-themes.scss";
 // @import "./org-tree.scss";
 
 body {

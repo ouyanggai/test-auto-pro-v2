@@ -91,6 +91,7 @@ export default {
       const param = {
         data: {
           useScope: 'invest',
+          flowStatus: 'enable',
           // auditWay,
           auditWayList: Array.isArray(auditWay) ? auditWay : [auditWay]
         },

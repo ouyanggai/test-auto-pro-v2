@@ -73,13 +73,39 @@ export default {
 <style lang="scss" scoped>
 .app-breadcrumb.el-breadcrumb {
   // display: inline-block;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 50px;
-  padding-left: 8px;
-  background: #fff;
+  // 固定 50px 以配合 .app-main 的 margin-top: 100px（50 顶部栏 + 50 面包屑）
+  height: 50px;
+  box-sizing: border-box;
+  padding-left: 20px;
+  background: #f7f9fc;
+  border-bottom: 1px solid #e8ecf2;
+
+  a,
+  .no-redirect {
+    color: #8a94a6;
+    transition: color 0.2s;
+  }
+
+  // 面包屑底是浅灰，青色对比度不足，这里用系统主色
+  a:hover {
+    color: #409EFF;
+  }
 
   .no-redirect {
     cursor: text;
+  }
+
+  // 末级即当前页（模板渲染为 .no-redirect），加深加粗与可跳转项区分。
+  // 这里刻意不用 ::v-deep —— 末级元素在本组件模板内，带 scope 属性，直接选中即可。
+  .el-breadcrumb__item:last-child .no-redirect {
+    color: #1f2d3d;
+    font-weight: 600;
+  }
+
+  ::v-deep .el-breadcrumb__separator {
+    color: #c0c6d0;
   }
 }
 </style>

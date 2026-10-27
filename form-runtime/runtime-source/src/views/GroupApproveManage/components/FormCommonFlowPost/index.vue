@@ -9,7 +9,7 @@
     <!-- <el-button type="primary" icon="el-icon-edit" @click="openInfoDialog"></el-button> -->
     <div class="btn-title" style="font-size:20px;width: 128px;">
       <i class="el-icon-suitcase-1" style="color:rgb(251,191,36);"></i>
-      <el-link :underline="false" @click="openInfoDialog" :disabled="noClick" style="font-size:16px;margin-left: 4px;">关联流程({{ totalCount || dataShowList.length }})</el-link>
+      <el-link :underline="false" @click="openInfoDialog" :disabled="noClick" style="font-size:16px;margin-left: 4px;">关联流程({{ totalCount }})</el-link>
     </div>
     <ul v-if="dataShowList.length" class="flowList-ul">
       <li class="flowList-li" v-for="(item,index) in displayList" :key="index">
@@ -28,7 +28,7 @@
         <span style="margin-left:4px;">加载中...</span>
       </li>
     </ul>
-    <MySendFlowList :visible.sync="flowListVisible" v-model="currentInfoObj" @selectFlow="selectFlow" :fieldSelectType="fieldSelectType">
+    <MySendFlowList ref="mySendFlowList" :visible.sync="flowListVisible" v-model="currentInfoObj" @selectFlow="selectFlow" :fieldSelectType="fieldSelectType">
     </MySendFlowList>
 
   </div>
@@ -60,7 +60,6 @@ export default {
       btnVisible:false,
       dataShowList:[],
       pendingFlowItems: [],   // 尚未请求的流程项
-      totalCount: 0,           // 过滤后的总条数
       showAll: false,
       displayLimit: 10,
       loading: false,
@@ -78,8 +77,6 @@ export default {
       .filter(x => x.otherBiz === 'commonFlow');
 
     if (flowItems.length === 0) return;
-
-    this.totalCount = flowItems.length;
 
     // 首次只取前 10 条，剩余的点展开再拉取
     const INITIAL = 10;
@@ -121,6 +118,13 @@ export default {
     },
   },
   computed: {
+    // 关联流程总数 = 已加载 + 未加载（去重），避免 selectFlow 时重复计数
+    totalCount() {
+      if (!this.pendingFlowItems.length) return this.dataShowList.length;
+      const loadedIds = new Set(this.dataShowList.map(x => x.id));
+      return this.dataShowList.length +
+        this.pendingFlowItems.filter(x => !loadedIds.has(x.otherBizId)).length;
+    },
     fieldType(){
       let copyType = JSON.parse(JSON.stringify(this.fieldSelectType))
       var str = '';
@@ -209,7 +213,7 @@ export default {
         const batchResults = await Promise.all(
           batch.map(x =>
             this.getDetailByFlowInstanceId(x.otherBizId)
-              .then(data => ({ success: true, data, id: x.otherBizId }))
+              .then(data => ({ success: true, data, id: x.otherBizId, flowInstanceId: x.flowInstanceId || x.otherBizId }))
               .catch(() => ({ success: false, id: x.otherBizId }))
           )
         );
@@ -217,8 +221,9 @@ export default {
         batchResults.forEach(item => {
           if (item.success && item.data) {
             results.push({
-              name: item.data.name,
+              name: item?.data?.name || item?.data?.flowName,
               id: item.id,
+              flowInstanceId: item.flowInstanceId,
               rowData: JSON.stringify(item.data)
             });
           }
@@ -235,8 +240,9 @@ export default {
         return;
       }
 
+      if (this.loading) return; // 防止并发加载
+
       const items = this.pendingFlowItems;
-      this.pendingFlowItems = [];
       this.showAll = true;
       this.loading = true;
 
@@ -246,7 +252,7 @@ export default {
         const batchResults = await Promise.all(
           batch.map(x =>
             this.getDetailByFlowInstanceId(x.otherBizId)
-              .then(data => ({ success: true, data, id: x.otherBizId }))
+              .then(data => ({ success: true, data, id: x.otherBizId, flowInstanceId: x.flowInstanceId || x.otherBizId }))
               .catch(() => ({ success: false, id: x.otherBizId }))
           )
         );
@@ -257,6 +263,7 @@ export default {
             newItems.push({
               name: item.data.name,
               id: item.id,
+              flowInstanceId: item.flowInstanceId,
               rowData: JSON.stringify(item.data)
             });
           }
@@ -266,33 +273,56 @@ export default {
         this.dataShowList = this.dataShowList.concat(newItems);
       }
 
+      this.pendingFlowItems = []; // 全部加载完再清空，避免 totalCount 计算属性跳动
       this.loading = false;
     },
     handleRemove(k, formType) {
-      console.log('k',k)
-      console.log('this.dataShowList',this.dataShowList)
-      console.log(111,this.dataShowList.findIndex(item => item.id == k))
-      this.dataShowList.splice(this.dataShowList.findIndex(item => item.id == k), 1);
+      const target = this.dataShowList.find(item => item.id == k);
+      if (!target) return;
+      this.$confirm(`确定要取消关联流程"${target.name}"吗？`, '提示', {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }).then(() => {
+        this.dataShowList.splice(this.dataShowList.findIndex(item => item.id == k), 1);
+        // 通知父组件更新已关联流程列表
+        this.emitFlowListUpdate();
+      }).catch(() => {});
     },
     checkDetail(item){
-      console.log('checkDetail',item)
       if (item.rowData) {
         this.previewHandle(JSON.parse(item.rowData), false)
       }
     },
     openInfoDialog(data){
       this.flowListVisible = true;
+      // 将当前已关联的流程ID传给弹框，用于预选checkbox
+      this.$nextTick(() => {
+        if (this.$refs.mySendFlowList) {
+          this.$refs.mySendFlowList.setPreSelectedIds(
+            this.dataShowList.map(item => item.id)
+          );
+        }
+      });
     },
     selectFlow(data) { // 选择赋值
-      console.log('selectFlow-data',data)
       this.dataShowList = this.dataShowList.concat(data.flowList);
       this.dataShowList = this.dataShowList.filter((value, index, self) =>
         index === self.findIndex((t) => t.id === value.id)
       );
+      // 通知父组件更新已关联流程列表
+      this.emitFlowListUpdate();
 
       // this.dataShowList = data.flowList;
-      console.log('this.dataShowList',this.dataShowList)
       this.flowListVisible = false;
+    },
+    emitFlowListUpdate() {
+      this.$emit('update:flowInstanceBizRelevanceList',
+        this.dataShowList.map(item => ({
+          otherBiz: 'commonFlow',
+          otherBizId: item.id
+        }))
+      );
     },
   },
 };

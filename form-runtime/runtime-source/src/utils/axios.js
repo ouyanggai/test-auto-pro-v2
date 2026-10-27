@@ -13,6 +13,14 @@ import {
 } from 'element-ui';
 import { baseUrl } from '@/config/env';
 import { localstorageGet } from '@/utils/auth';
+import { getLocationParam } from '@/utils/runtimeAuthSync';
+import {
+  isFlowAuthExpired,
+  refreshPortalFlowAuth,
+  requestWithSidRefresh,
+  setFlowRequestSid,
+  usesPortalFlowAuth
+} from '@/utils/portalFlowAuth';
 // import Message from './resetMessage.js';
 let loading = null; // 定义loading变量
 // 内存中正在请求的数量
@@ -36,7 +44,7 @@ function endLoading () {
   loadingNum--;
   if (loadingNum <= 0) {
     loadingNum = 0
-    loading.close();
+    loading?.close();
   }
 }
 
@@ -85,12 +93,15 @@ const http = axios.create({
   headers: getHeaders
 });
 http.interceptors.request.use((config) => {
+  // Keep iframe/runtime configuration changes effective after the axios
+  // instance has already been created.
+  config.baseURL = baseUrl;
   loadingNum = loadingNum < 0 ? 0 : loadingNum
   if (config && config.data && config.data.hasOwnProperty('isLoading') && !config.data.isLoading) {
     // 异步传参中存在isLoading属性且为false时不开启全屏loading
     isLoading = config.data.isLoading;
     delete config.data.isLoading;
-    loading.close();
+    loading?.close();
     loadingNum++;
   } else {
     // 加载loading
@@ -141,9 +152,12 @@ function apiAxios (method, url, params, response, file, config) {
   if (params.hasOwnProperty('sid')) {
     sid = params.sid;
   }
+  const platformCode = params.platformCode || getLocationParam('platformCode') || 200001;
+  const requestCustomerCode = params.data?.customerCode || params.customerCode || customerCode;
+  const canRefreshSid = !!sid && !params.hasOwnProperty('isBid');
   // console.log('sid',sid)
   if (sid && !params.hasOwnProperty('isBid')) {
-    url = `${url}?sid=${sid}&platformCode=${params.platformCode||200001}`;
+    url = setFlowRequestSid(url, sid, platformCode);
     // url = `${url}?sid=${sid}&platformCode=200001`;
     if(config?.noLoading)url += '&unStatistics=1'
     params.sid = sid;
@@ -172,20 +186,40 @@ function apiAxios (method, url, params, response, file, config) {
   fi.sid = sid;
 
   return new Promise((resolve, reject) => {
-    return http({
-      method: method,
-      url: url,
-      data: method === 'POST' || method === 'PUT' ? params : null,
-      params: method === 'GET' || method === 'DELETE' ? params : null,
-      headers: file ? fi : method === 'GET' ? dd : po,
-      ...config
-    })
+    const send = (context) => {
+      if (context) {
+        sid = context.sid;
+        params.sid = sid;
+        url = setFlowRequestSid(url, sid, platformCode);
+      }
+      const request = {
+        method: method,
+        url: url,
+        data: method === 'POST' || method === 'PUT' ? params : null,
+        params: method === 'GET' || method === 'DELETE' ? params : null,
+        headers: { ...(file ? fi : method === 'GET' ? dd : po) },
+        ...config
+      };
+      if (context) {
+        request.headers = { ...request.headers, sid };
+        request.url = setFlowRequestSid(request.url, sid, platformCode);
+        if (request.params) request.params = { ...request.params, sid };
+        if (request.data instanceof FormData) request.data.set('sid', sid);
+        else if (request.data) request.data = { ...request.data, sid };
+      }
+      return http(request);
+    };
+    return requestWithSidRefresh(send, () => canRefreshSid
+      ? refreshPortalFlowAuth({ sid, platformCode, customerCode: requestCustomerCode })
+      : null)
       .then(function (originResponse) {
         var res = originResponse.data;
-        if (
-          (res.code && res.code === 'AUTH_401') ||
-          (res.code && res.code === 'RESP401')
-        ) {
+        if (isFlowAuthExpired(originResponse)) {
+          if (usesPortalFlowAuth()) {
+            Message.error(res.message || '流程 SID 刷新后仍不可用，请刷新页面重试');
+            reject(res);
+            return;
+          }
           // return;
           Message({
             message: '登录过期，请重新登录',
@@ -210,6 +244,7 @@ function apiAxios (method, url, params, response, file, config) {
               path: '/login'
             });
           }
+          reject(res);
         } else {
           if (res instanceof Blob) { // 返回文件流直接调用callback返回
             response(res, originResponse);
@@ -242,10 +277,12 @@ function apiAxios (method, url, params, response, file, config) {
           // });
           typeof response == 'function' && response(err);
           reject(err);
-        } else if (
-          err.response && (err.response.status === 401 ||
-          err.response.data.code == 'RESP401')
-        ) {
+        } else if (isFlowAuthExpired(err.response)) {
+          if (usesPortalFlowAuth()) {
+            Message.error(err.response.data?.message || '流程 SID 刷新后仍不可用，请刷新页面重试');
+            reject(err);
+            return;
+          }
           if (store.state.user.token) {
             Message({
               message: '登录过期，请重新登录',
@@ -267,6 +304,7 @@ function apiAxios (method, url, params, response, file, config) {
               path: '/login'
             });
           }
+          reject(err);
         } else {
           const errMsg = err.toString();
           if (errMsg.indexOf('504') > -1) {
@@ -276,6 +314,7 @@ function apiAxios (method, url, params, response, file, config) {
               type: 'error',
               duration: 5 * 1000
             });
+            reject(err);
           } else {
             typeof response == 'function' && response(err);
             /[$]message[.]error/.test(String(response)) || Message.error(err.message);

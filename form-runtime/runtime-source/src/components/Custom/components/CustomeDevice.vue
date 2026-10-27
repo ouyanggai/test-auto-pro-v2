@@ -16,7 +16,6 @@
 <script>
 /* eslint-disable */
 import StationDevice from './StationDevice'
-import { parseJsonObject } from '@/utils/parse-value'
 export default {
   name: 'CustomeDevice',
   components: {
@@ -48,7 +47,10 @@ export default {
     value: {
       handler(val) {
         if (val) {
-          const dataModel = parseJsonObject(val)
+          var dataModel = val
+          if(typeof(val) == 'string'){
+              dataModel = JSON.parse(val)
+          }
           this.dataModel = dataModel
           this.deviceName = this.dataModel['deviceName']
           this.deviceNo = this.dataModel['deviceNo']

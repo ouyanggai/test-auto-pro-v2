@@ -48,7 +48,6 @@ import mixin from './mixin.js';
 import MySendFlowList from './MySendFlowList.vue';
 import EnterpriseExamineDialog from '@/views/GroupApproveManage/components/EnterpriseExamineDialog';
 import CheckFlowNodeDetail from '@/views/GroupApproveManage/components/CheckFlowNodeDetail.vue';
-import { parseJsonArray, parseJsonObject } from '@/utils/parse-value';
 
 export default {
   name: 'GeneralListSelectShow',
@@ -100,13 +99,17 @@ export default {
     // console.log('printRead',this.printRead)
     // console.log('this.fieldSelectType1',this.fieldSelectType)
     // console.log('this.currentInfoObj',this.currentInfoObj)
-    this.dataShowList = parseJsonArray(parseJsonObject(this.currentInfoObj).flowList);
+    if (this.currentInfoObj) {
+      this.dataShowList = JSON.parse(this.currentInfoObj).flowList;
+    }
   },
   watch: {
     value(val) {
       console.log('val-流程多选-传值',val)
       this.currentInfoObj = val;
-      this.dataShowList = parseJsonArray(parseJsonObject(val).flowList);
+      if (JSON.parse(val)?.flowList){
+        this.dataShowList = JSON.parse(val).flowList;
+      }
       // this.currentInfoId = val
     },
     placeholder(val) {
@@ -141,8 +144,7 @@ export default {
     checkDetail(item){
       console.log('checkDetail',item)
       if (item.rowData) {
-        const row = parseJsonObject(item.rowData)
-        if (Object.keys(row).length) this.previewHandle(row, false)
+        this.previewHandle(JSON.parse(item.rowData), false)
       }
     },
     openInfoDialog(data){
@@ -151,7 +153,7 @@ export default {
     selectFlow(data) { // 选择赋值
       console.log('selectFlow-data',data)
       this.currentInfoObj = data;
-      this.dataShowList = parseJsonArray(parseJsonObject(data).flowList);
+      this.dataShowList = JSON.parse(data).flowList;
       this.flowListVisible = false;
 
       // 添加表单校验

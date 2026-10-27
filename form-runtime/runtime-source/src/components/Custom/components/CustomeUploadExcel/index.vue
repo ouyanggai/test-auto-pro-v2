@@ -89,7 +89,6 @@
 </template>
 
 <script>
-import { parseJsonObject } from '@/utils/parse-value';
 import XLSX from '@/lib/xlsx/xlsx.full.min.js';
 
 /* eslint-disable */
@@ -203,7 +202,8 @@ export default {
       console.log(this.value, 'this.value');
       try {
         // 如果 value 是字符串，尝试解析它
-        return Object.keys(parseJsonObject(this.value));
+        const rules = typeof this.value === 'string' ? JSON.parse(this.value) : this.value;
+        return rules && typeof rules === 'object' ? Object.keys(rules) : [];
       } catch (error) {
         console.error('解析 value 失败:', error);
         return [];
@@ -352,7 +352,7 @@ export default {
       let rules;
       console.log(this.value, 'this.value')
       try {
-        rules = parseJsonObject(this.value);
+        rules = typeof this.value === 'string' ? JSON.parse(this.value) : this.value;
       } catch (error) {
         rules = {};
       }
@@ -440,7 +440,7 @@ export default {
       this.hasValidationErrors = false;
       let rules;
       try {
-        rules = parseJsonObject(this.value);
+        rules = typeof this.value === 'string' ? JSON.parse(this.value) : this.value;
       } catch (error) {
         console.error('解析验证规则失败:', error);
         return;
@@ -641,7 +641,7 @@ export default {
       return true;
     },
     isHeaderRequired(header) {
-      let rules = parseJsonObject(this.value);
+      let rules = typeof this.value === 'string' ? JSON.parse(this.value) : this.value;
       console.log(rules,'rules')
       const columnRules = rules[header] || [];
       return columnRules.some(rule => rule.required === true);

@@ -22,10 +22,32 @@ function pathWithin (candidate, root) {
   return candidate === root || candidate.startsWith(`${root}/`)
 }
 
+// isPreservedTarget 判断映射目标是否属于项目明确保留的本地运行依赖。
+function isPreservedTarget (target, preservedTargetPaths) {
+  const normalizedTarget = target.replace(/\\/g, '/')
+  return preservedTargetPaths.some(value => {
+    const preserved = value.replace(/\\/g, '/')
+    return pathWithin(normalizedTarget, preserved)
+  })
+}
+
+// mappedTargetPath 计算映射文件在 runtime-source 中的相对路径。
+function mappedTargetPath (mapping, suffix) {
+  const target = mapping.target.replace(/\\/g, '/')
+  return mapping.type === 'file' ? target : path.posix.join(target, suffix)
+}
+
 // syncCheck 确认候选构建实际消费的 runtime-source 与任务快照一致。
 function syncCheck () {
   const config = getSyncConfig()
   const files = trackedFiles(config.sourceRoot)
+  const preservedTargetPaths = config.manifest.preservedTargetPaths || []
+  for (const preserved of preservedTargetPaths) {
+    const normalized = preserved.replace(/^runtime-source\//, '').replace(/\\/g, '/')
+    if (!fs.existsSync(path.join(config.targetRoot, normalized))) {
+      throw new Error(`本地保留的运行依赖缺失: ${preserved}`)
+    }
+  }
   for (const mapping of config.manifest.mappings) {
     const sourceRelative = mapping.source.split(path.sep).join('/')
     const targetRelative = mapping.target.replace(/^runtime-source\//, '')
@@ -34,6 +56,8 @@ function syncCheck () {
       const suffix = mapping.type === 'file' ? '' : file.slice(sourceRelative.length + 1)
       const source = path.join(config.sourceRoot, file)
       const target = path.join(config.targetRoot, targetRelative, suffix)
+      // 保留目录来自本项目受控产物，不与上游同名文件比较；完整目标摘要仍会校验其实际内容。
+      if (isPreservedTarget(mappedTargetPath(mapping, suffix), preservedTargetPaths)) continue
       if (!fs.existsSync(target) || sha256(source) !== sha256(target)) {
         throw new Error(`同步校验不一致: ${file} -> ${path.join(mapping.target, suffix)}`)
       }
@@ -57,4 +81,6 @@ function syncCheck () {
   process.stdout.write(`[SYNC_CHECK] ${registrations.length} 个目标自定义组件注册已进入真实入口\n`)
 }
 
-syncCheck()
+if (require.main === module) syncCheck()
+
+module.exports = { isPreservedTarget, mappedTargetPath, syncCheck }

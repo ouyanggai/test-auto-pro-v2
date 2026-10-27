@@ -12,6 +12,8 @@ declare -a paths=()
 declare -a remotes=()
 declare -a branches=()
 declare -a remote_heads=()
+declare -a selected_names=()
+declare -i total_count=0
 
 fail() {
   printf '错误：%s\n' "$*" >&2
@@ -33,7 +35,61 @@ load_manifest() {
     branches+=("${branch}")
   done < "${manifest}"
 
-  [[ "${#names[@]}" -eq 13 ]] || fail "参考仓库数量必须为 13，当前为 ${#names[@]}"
+  total_count="${#names[@]}"
+  [[ "${total_count}" -eq 13 ]] || fail "参考仓库数量必须为 13，当前是 ${total_count}"
+  load_selection
+}
+
+# load_selection 只允许清单中已有且去重后的仓库名，供机房迁移等场景安全同步单个来源。
+load_selection() {
+  local raw="${REFS_REPOSITORIES:-}"
+  local name
+  [[ -z "${raw}" ]] && return 0
+
+  IFS=',' read -ra raw_names <<<"${raw}"
+  for name in "${raw_names[@]}"; do
+    name="$(printf '%s' "${name}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -n "${name}" ]] || fail "指定参考仓库不能为空"
+    [[ "${#selected_names[@]}" -eq 0 ]] || [[ " ${selected_names[*]} " != *" ${name} "* ]] || fail "指定参考仓库重复：${name}"
+
+    local found=0
+    local existing
+    for existing in "${names[@]}"; do
+      if [[ "${existing}" == "${name}" ]]; then
+        found=1
+        break
+      fi
+    done
+    [[ "${found}" -eq 1 ]] || fail "指定参考仓库不存在：${name}"
+    selected_names+=("${name}")
+  done
+
+  [[ "${#selected_names[@]}" -gt 0 ]] || fail "指定参考仓库不能为空"
+  filter_selected_repositories
+}
+
+# filter_selected_repositories 只缩小本次操作范围，不改变完整清单的 13 仓库校验。
+filter_selected_repositories() {
+  [[ "${#selected_names[@]}" -gt 0 ]] || return 0
+
+  local kept_names=()
+  local kept_paths=()
+  local kept_remotes=()
+  local kept_branches=()
+  local index
+  for index in "${!names[@]}"; do
+    if [[ " ${selected_names[*]} " == *" ${names[index]} "* ]]; then
+      kept_names+=("${names[index]}")
+      kept_paths+=("${paths[index]}")
+      kept_remotes+=("${remotes[index]}")
+      kept_branches+=("${branches[index]}")
+    fi
+  done
+
+  names=("${kept_names[@]}")
+  paths=("${kept_paths[@]}")
+  remotes=("${kept_remotes[@]}")
+  branches=("${kept_branches[@]}")
 }
 
 read_remote_head() {
@@ -57,12 +113,33 @@ check_existing_repo() {
   git -C "${repo}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "目录不是 Git 仓库：${repo}"
 
   actual_remote="$(git -C "${repo}" remote get-url origin 2>/dev/null)" || fail "仓库缺少 origin：${repo}"
-  [[ "${actual_remote}" == "${expected_remote}" ]] || fail "远端不符：${repo}，实际为 ${actual_remote}"
-
   actual_branch="$(git -C "${repo}" branch --show-current)"
   [[ "${actual_branch}" == "${expected_branch}" ]] || fail "分支不符：${repo}，实际为 ${actual_branch}"
 
   [[ -z "$(git -C "${repo}" status --porcelain --untracked-files=all)" ]] || fail "仓库存在未提交修改，拒绝同步：${repo}"
+
+  if [[ "${actual_remote}" != "${expected_remote}" ]]; then
+    migrate_existing_remote "${repo}" "${expected_remote}" "${expected_branch}"
+    actual_remote="$(git -C "${repo}" remote get-url origin)"
+    [[ "${actual_remote}" == "${expected_remote}" ]] || fail "远端迁移失败：${repo}"
+  fi
+}
+
+# migrate_existing_remote 只在分支正确、工作树干净且新远端包含本地历史时切换 origin。
+function migrate_existing_remote() {
+  local repo="$1"
+  local expected_remote="$2"
+  local expected_branch="$3"
+  local local_head
+  local remote_head
+
+  local_head="$(git -C "${repo}" rev-parse HEAD)"
+  remote_head="$(read_remote_head "${expected_remote}" "${expected_branch}")" || fail "无法读取新远端分支：${expected_remote} ${expected_branch}"
+  git -C "${repo}" fetch --quiet "${expected_remote}" "refs/heads/${expected_branch}:refs/remotes/refs-sync-migration/${expected_branch}" || fail "拉取新远端信息失败：${repo}"
+  git -C "${repo}" merge-base --is-ancestor "${local_head}" "${remote_head}" || fail "新远端与本地历史分叉，拒绝迁移：${repo}"
+  git -C "${repo}" remote set-url origin "${expected_remote}" || fail "更新 origin 失败：${repo}"
+  git -C "${repo}" fetch --quiet origin "${expected_branch}" || fail "按新远端拉取跟踪分支失败：${repo}"
+  printf '安全迁移远端：%s\n' "${repo}"
 }
 
 query_all_remote_heads() {
@@ -122,8 +199,13 @@ sync_repositories() {
     remote_heads[index]="${final_remote_head}"
   done
 
-  write_reference_doc
-  printf '参考仓库同步完成：13/13\n'
+  if [[ "${#names[@]}" -eq "${total_count}" ]]; then
+    write_reference_doc
+  else
+    update_selected_reference_doc
+    printf '指定仓库同步完成，参考清单文档保持全量同步时重写。\n'
+  fi
+  printf '参考仓库同步完成：%d/%d\n' "${#names[@]}" "${total_count}"
 }
 
 write_reference_doc() {
@@ -153,6 +235,28 @@ write_reference_doc() {
     printf -- '- 任何脏目录、分支不符、分叉或远端错误都会中止同步；禁止 reset 或 checkout 覆盖。\n'
   } > "${temporary_doc}"
 
+  mv "${temporary_doc}" "${reference_doc}"
+}
+
+# update_selected_reference_doc 只刷新已选仓库记录，避免部分同步伪装为全量同步。
+update_selected_reference_doc() {
+  local temporary_doc
+  local index
+  local relative_path
+  local synced_at
+
+  [[ -f "${reference_doc}" ]] || fail "参考清单文档不存在，不能部分更新：${reference_doc}"
+  temporary_doc="${reference_doc}.tmp.$$"
+  synced_at="$(date '+%Y-%m-%d %H:%M:%S %z')"
+  cp "${reference_doc}" "${temporary_doc}"
+  for index in "${!names[@]}"; do
+    relative_path="${paths[index]#${refs_root}/}"
+    REFS_NAMES="${names[index]}" REFS_PATH="参考代码/${relative_path}" \
+      REFS_REMOTE="${remotes[index]}" REFS_BRANCH="${branches[index]}" \
+      REFS_HEAD="${remote_heads[index]}" REFS_TIME="${synced_at}" REFS_DOC="${temporary_doc}" \
+      python -c 'import os, pathlib; e=os.environ; p=pathlib.Path(e["REFS_DOC"]); name=e["REFS_NAMES"]; key="| `{}` |".format(name); rows=p.read_text(encoding="utf-8").splitlines(); matches=[i for i,row in enumerate(rows) if key in row]; assert len(matches)==1, "参考清单仓库行必须且只能有一条: {}".format(key); i=matches[0]; rows[i]="| `{}` | `{}` | `{}` | `{}` | `{}` | {} |".format(name,e["REFS_PATH"],e["REFS_REMOTE"],e["REFS_BRANCH"],e["REFS_HEAD"],e["REFS_TIME"]); p.write_text("\n".join(rows)+"\n", encoding="utf-8")' \
+      || { rm -f "${temporary_doc}"; fail "更新参考清单失败：${names[index]}"; }
+  done
   mv "${temporary_doc}" "${reference_doc}"
 }
 

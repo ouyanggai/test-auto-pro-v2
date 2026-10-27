@@ -2,7 +2,7 @@
 
 Playwright + Chromium 无头执行服务：装载参考项目原生 `/flow` 路由，拦截目标请求并转发给 Go，不做界面操作。边界见 `docs/s2/01-执行服务设计.md`。
 
-`flow-source/` 由 `executor-service/flow-source-manifest.json` 固定远端、分支与提交，用 `sync-source` 直接 git 同步（当前 `test`/`bff4ef8`），不依赖任何本机静态目录。FormMaking 产物不在上游 Git 里，同步时从 `form-runtime/runtime-source` 的受控副本补齐并逐字节校验。原生 `/flow` 页面由 `build-native-page` 在本机真实构建到 `flow-source/dist`。
+`flow-source/` 每次源码准备都会从 `executor-service/flow-source-manifest.json` 指定的基座与全过程远端重新读取 `test` 最新提交，再从这些 Git 对象生成本次候选；清单不固定提交号，本次 SHA 仅记录在候选、构建和发布事实中。FormMaking 产物不在上游 Git 里，同步时从 `form-runtime/runtime-source` 的受控副本补齐并逐字节校验。原生 `/flow` 页面由 `build-native-page` 在本机真实构建到 `flow-source/dist`。
 
 ## 固定运行方式
 

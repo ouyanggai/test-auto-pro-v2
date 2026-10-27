@@ -1,13 +1,34 @@
+<!--
+ * @Descripttion: 通用列表选择后展示（选择单个数据）（目前支持合同和流程列表选择）(参考合规评审表的手续文件或者合同付款单选择合同)
+ * 注意：refresh里面需要传this.setData({contractObj: JSON.stringify({'initiatorCompanyId':initiatorCompanyId})})
+ * @Author: zhengzetao
+ * @Date: 2024-08-02
+-->
+
 <template>
   <div class="custom-container">
-    <MySendFlowList :visible.sync="flowListVisible" v-model="currentInfoObj" @selectFlow="selectFlow" :fieldSelectType="fieldSelectType">
+    <!-- <template v-if="printRead"> -->
+      <!-- <div>123</div> -->
+      <!-- <span>{{ JSON.parse(currentInfoObj).name || '' }}</span> -->
+    <!-- </template> -->
+
+    <MySendFlowList :visible.sync="flowListVisible" v-model="currentInfoObj" @selectFlow="selectFlow" :fieldSelectType="fieldSelectType" :allowTerminatedContract="allowTerminatedContract">
+      <!-- <el-input v-if="JSON.parse(currentInfoObj).name" readonly v-model="scope.viewName" :disabled="disabled" @focus="openInfoDialog" style="width:100%;padding-left: 5px;">
+        <el-button slot="append" icon="el-icon-search" v-if="fieldType == 'flow'" @click="checkDetail"></el-button>
+      </el-input> 
+      <el-button v-else type="primary" :disabled="disabled" @click="openInfoDialog" style="margin-left:5px;">{{ placeholder }}</el-button> -->
+
       <template scope="scope">
         <span v-if="printRead" class="print-read-label">
-          <span>{{ displayName }}</span>
+          <!-- <span>333</span> -->
+          <span>{{ JSON.parse(currentInfoObj).name }}</span>
+          <el-tag v-if="isTerminatedSelection" type="danger" size="mini" class="terminated-contract-tag">已终止</el-tag>
+          <!-- <span>{{ JSON.parse(currentInfoObj) }}</span> -->
         </span>
 
         <template v-else>
-          <el-input v-if="displayName" readonly :value="displayName" :disabled="disabled" @focus="openInfoDialog" style="width:100%;padding-left: 5px;">
+          <el-input v-if="JSON.parse(currentInfoObj).name" readonly v-model="scope.viewName" :disabled="disabled" @focus="openInfoDialog" style="width:100%;padding-left: 5px;">
+            <el-tag v-if="isTerminatedSelection" slot="suffix" type="danger" size="mini" class="terminated-contract-tag">已终止</el-tag>
             <el-button slot="append" icon="el-icon-search" @click="checkDetail"></el-button>
           </el-input>
           <el-button v-else type="primary" :disabled="disabled" @click="openInfoDialog" style="margin-left:5px;">{{ placeholder }}</el-button>
@@ -31,7 +52,6 @@ import mixin from './GeneralListSelectShow/mixin.js';
 import MySendFlowList from './ContractChangeListSelectList.vue';
 import EnterpriseExamineDialog from '@/views/GroupApproveManage/components/EnterpriseExamineDialog';
 import CheckFlowNodeDetail from '@/views/GroupApproveManage/components/CheckFlowNodeDetail.vue';
-import { parseJsonObject } from '@/utils/parse-value';
 
 export default {
   name: 'ContractChangeListSelect',
@@ -49,16 +69,21 @@ export default {
       default: ''
     },
     disabled: { // value
-      type: [Boolean],
+      type: [Boolean], // [Array, String, Number]
       default() {
         return false;
       }
     },
     printRead: { // value
-      type: [Boolean],
+      type: [Boolean], // [Array, String, Number]
       default() {
         return true;
+        // return false;
       }
+    },
+    allowTerminatedContract: {
+      type: Boolean,
+      default: false
     }
   },
   data() {
@@ -80,35 +105,44 @@ export default {
   created() {
   },
   mounted() {
-  },
+    // console.log('this',this)
+    console.log('printRead',this.printRead)
+    console.log('this.fieldSelectType1',this.fieldSelectType)
+   },
   watch: {
     value(val) {
+      console.log('val123-通用列表选择',val)
       this.currentInfoObj = val
+      // this.currentInfoId = val
+    },
+    placeholder(val) {
+      console.log('======placeholder======',val)
     },
     currentInfoObj(val){
+      console.log('=======1-通用列表选择',val)
       this.$emit('input', val)
+    },
+    disabled(val){
+      console.log('====disabled===',this.disabled)
+    },
+    printRead(val){
+      console.log('====printRead22===',this.printRead)
     },
   },
   computed: {
-    parsedInfo () {
-      return parseJsonObject(this.currentInfoObj)
-    },
-    displayName () {
-      const info = this.parsedInfo
-      if (!info) return ''
-      if (typeof info === 'string') return info
-      if (info.name) return info.name
-      if (info.contractName) return info.contractName
-      if (info.title) return info.title
-      if (info.contractNumber) return info.contractNumber
-      if (info.rowData) {
-        const row = parseJsonObject(info.rowData)
-        if (row && (row.name || row.contractName)) return row.name || row.contractName
+    isTerminatedSelection() {
+      if (!this.currentInfoObj) return false;
+      try {
+        const selected = JSON.parse(this.currentInfoObj);
+        const status = selected.lifecycleStatus || selected.terminationStatus || selected.contractStatus || selected.status;
+        return selected.terminated === true || String(status || '').toUpperCase() === 'TERMINATED' || String(status || '') === '已终止';
+      } catch (error) {
+        return false;
       }
-      return info.id || ''
     },
     fieldType(){
-      let copyType = JSON.parse(JSON.stringify(this.fieldSelectType || ''))
+      console.log('this.fieldSelectType',this.fieldSelectType)
+      let copyType = JSON.parse(JSON.stringify(this.fieldSelectType))
       var str = '';
       for (var item in this.typeList){
         var result = new RegExp(item,'i').test(copyType);
@@ -122,16 +156,17 @@ export default {
   },
   methods: {
     checkDetail(){
-      const info = parseJsonObject(this.currentInfoObj)
-      if (info && info.rowData) {
-        let row = parseJsonObject(info.rowData);
-        if (row && Object.keys(row).length) this.previewHandle(row, false);
-      }
+      // console.log(111)
+      console.log(111,this.currentInfoObj)
+      let row = JSON.parse(JSON.parse(this.currentInfoObj).rowData);
+      this.previewHandle(row, false);
     },
-    openInfoDialog(){
-      const info = parseJsonObject(this.currentInfoObj)
-      let selectCompanyId = info && info.selectCompanyId ? info.selectCompanyId : '';
-      if (info && info.formType == 'contract_receipt_form') {
+    openInfoDialog(data){
+      console.log('openInfoDialog-data',this.currentInfoObj)
+      let selectCompanyId = this.currentInfoObj != '' && JSON.parse(this.currentInfoObj).selectCompanyId ? JSON.parse(this.currentInfoObj).selectCompanyId : '';
+      console.log('selectCompanyId',selectCompanyId)
+      console.log('this.currentInfoObj.formType',JSON.parse(this.currentInfoObj).formType)
+      if (JSON.parse(this.currentInfoObj) && JSON.parse(this.currentInfoObj).formType == 'contract_receipt_form') {
         if (selectCompanyId) {
           this.flowListVisible = true;
         } else {
@@ -141,23 +176,31 @@ export default {
         this.flowListVisible = true;
       }
     },
-    selectFlow(data) {
+    selectFlow(data) { // 选择赋值
+      console.log('selectFlow-data',data)
       this.currentInfoObj = data;
       this.flowListVisible = false;
 
+      // 添加表单校验
       this.$nextTick(() => { 
-        if (this.$parent && this.$parent.$parent && typeof this.$parent.$parent.validate === 'function') {
-          const result = this.$parent.$parent.validate([this.fieldSelectType])
-          if (result && typeof result.catch === 'function') result.catch(() => {})
-        }
+        if (this.allowTerminatedContract) this.$emit('onChange', data);
+        const result = this.$parent.$parent.validate([this.fieldSelectType])
+        if (result && typeof result.catch === 'function') result.catch(() => {})
       })
     },
+    test(){
+      console.log(123)
+    }
   },
 };
 </script>
 <style lang="scss" scoped>
 .custom-container {
   width: 100%;
+}
+
+.terminated-contract-tag {
+  margin-left: 6px;
 }
 
 table {
@@ -168,4 +211,5 @@ td {
   text-align: center;
   padding: 0 2px;
 }
+
 </style>

@@ -197,6 +197,9 @@ export default {
     }
   },
   created() {
+    if (this.$route?.query?.fromCase && this.$route.query.id) {
+      this.openCaseForm(this.$route.query.id);
+    }
     if (localstorageGet('findObj')) {
       const findObj = localstorageGet('findObj');
       this.needFind = true;
@@ -209,6 +212,45 @@ export default {
     this.height = clientHeight - 170;
   },
   methods: {
+    async openCaseForm(flowInstanceId) {
+      const instanceList = await this.getFormInstance(flowInstanceId);
+      const row = instanceList[0];
+      this.$router.replace({
+        path: this.$route.path,
+        query: { tab: 'dueout' }
+      }).catch(() => {});
+      if (!row) {
+        this.$message.warning('未找到对应的流程表单');
+        return;
+      }
+      row.flowInstanceId = row.flowInstanceId || row.id;
+      row.flowStatus = row.flowStatus || row.status;
+      row.flowName = row.flowName || row.formName;
+      row.flowNodeProxyId = row.flowNodeProxyId || row.currentNodeProxyId;
+      row.flowInstanceBizRelevanceList = row.flowInstanceBizRelevanceList || [];
+      row.nextAuditNodeList = row.nextAuditNodeList || [];
+      this.clickReInitiate(row, true);
+    },
+    getFormInstance(flowInstanceId) {
+      const data = {
+        useScope: 'invest',
+        auditWayList: [],
+        initiator: 'all',
+        id: flowInstanceId
+      };
+      return new Promise(resolve => {
+        this.$axios.post(
+          Api.schedule.getFlowInstanceList,
+          {
+            data,
+            pagination: false
+          },
+          res => {
+            resolve(res.isSuccess && Array.isArray(res.data) ? res.data : []);
+          }
+        ).catch(() => resolve([]));
+      });
+    },
     queryData(query) {
       this.query = {
         ...query
@@ -282,7 +324,7 @@ export default {
             //   item.flowStatus = this.translateStatus(item);
             // });
             this.pagination.total = res.total;
-            
+
             // 检查当前页是否超出最大页数，如果超出则回到前一页
             const maxPage = Math.ceil(this.pagination.total / this.pagination.size);
             if (maxPage > 0 && this.pagination.pages > maxPage) {
@@ -336,6 +378,7 @@ export default {
     // 进入
     async clickReInitiate(row, type) {
       console.log('clickReInitiate',row)
+      const nextAuditNodeList = Array.isArray(row.nextAuditNodeList) ? row.nextAuditNodeList : [];
       if (row.flowInstanceName && row.flowInstanceName.indexOf('原发') > -1) { // 转发流程
         const formExistType = row.flowInstanceBizRelevanceList.find(item => item.otherBiz == 'transpond_formExist');
         this.formExist = formExistType?.otherBizId || '';
@@ -352,7 +395,7 @@ export default {
       this.manualChooseNodes = [];
       if (row.nextNodeType == 'parallel') {
         // 下一节点为并行,取出其中需要自选的节点
-        row.nextAuditNodeList.map(x => {
+        nextAuditNodeList.map(x => {
           if (x.flowNodeAuditConfig?.auditType == 'run_node_choose') {
             // 取出其中的审批人自选节点
             this.parallelNodeChooseList.push({
@@ -372,9 +415,9 @@ export default {
           }
         });
       }
-      if (row.auditPassLogicFlag && row.branchExecuteType == 'custom_choose' && row.nextAuditNodeList.length > 1) {
+      if (row.auditPassLogicFlag && row.branchExecuteType == 'custom_choose' && nextAuditNodeList.length > 1) {
         // 下一节点为手动分支
-        row.nextAuditNodeList.map((x, index) => {
+        nextAuditNodeList.map((x, index) => {
           this.manualChooseNodes.push({
             nextNodeTemplateId: x.id,
             nodeName: x.nodeName,
@@ -510,6 +553,8 @@ export default {
             this.deleteContractPayment(id)
           } else if(typeName == 'contract_receipt_form'){ // 合同收款申请单
             this.deleteContractCollection(id)
+          } else if(typeName == 'stock_transfer_funds'){ // 股转款登记表
+            this.deleteStockTransferFunds(id)
           } else if(typeName == 'contract_invoicing'){ // 合同开票申请单
             this.deleteContractInvoicing(id)
           } else if(typeName == 'cost_funds_transactions'){ // 请款单（资金往来和投资款）
@@ -583,6 +628,12 @@ export default {
     deleteContractCollection(id){
       this.$axios.post(
         Api.formMaking.contractCollectionDelete,
+        { data: { id: id }});
+    },
+    // 删除股转款登记表业务
+    deleteStockTransferFunds(id){
+      this.$axios.post(
+        Api.formMaking.stockTransferFundsDelete,
         { data: { id: id }});
     },
     // 删除轮岗考核表业务

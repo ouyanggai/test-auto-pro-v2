@@ -17,6 +17,11 @@ const runtimeKeyConfig = {
     readAliases: ['userId', `${storagePrefix}-userId`],
     writeAliases: []
   },
+  userName: {
+    storageKey: 'userName',
+    readAliases: ['userName', `${storagePrefix}-userName`],
+    writeAliases: []
+  },
   companyId: {
     storageKey: 'companyId',
     readAliases: ['companyId', `${storagePrefix}-companyId`],
@@ -25,6 +30,11 @@ const runtimeKeyConfig = {
   companyName: {
     storageKey: 'companyName',
     readAliases: ['companyName', `${storagePrefix}-companyName`],
+    writeAliases: []
+  },
+  userDepartmentName: {
+    storageKey: 'userDepartmentName',
+    readAliases: ['userDepartmentName', `${storagePrefix}-userDepartmentName`],
     writeAliases: []
   },
   topCompanyId: {
@@ -115,6 +125,26 @@ export function persistRuntimeAuth(payload = {}) {
   });
 }
 
+export function syncRuntimeAuthUrl(payload = {}) {
+  const url = new URL(window.location.href);
+  const hashIndex = url.hash.indexOf('?');
+  const hashPath = hashIndex < 0 ? url.hash : url.hash.slice(0, hashIndex);
+  const hashParams = new URLSearchParams(hashIndex < 0 ? '' : url.hash.slice(hashIndex + 1));
+  Object.keys(payload).forEach(field => {
+    if (!payload[field]) return;
+    if (!hashPath.startsWith('#/')) {
+      url.searchParams.set(field, payload[field]);
+      return;
+    }
+    // 同时更新 search 和 hash 中已有的参数，避免旧 URL 在刷新后覆盖缓存。
+    if (url.searchParams.has(field)) url.searchParams.set(field, payload[field]);
+    if (hashParams.has(field) || !url.searchParams.has(field)) hashParams.set(field, payload[field]);
+  });
+  const query = hashParams.toString();
+  url.hash = `${hashPath}${query ? `?${query}` : ''}`;
+  window.history.replaceState(window.history.state, '', url.toString());
+}
+
 export function clearRuntimeAuthAliases() {
   Object.values(runtimeKeyConfig).forEach((keyConfig) => {
     keyConfig.writeAliases.forEach((key) => window.localStorage.removeItem(key));
@@ -126,8 +156,10 @@ export function getRuntimeAuth() {
     sid: readRuntimeValue('sid'),
     customerCode: readRuntimeValue('customerCode'),
     userId: readRuntimeValue('userId'),
+    userName: readRuntimeValue('userName'),
     companyId: readRuntimeValue('companyId'),
     companyName: readRuntimeValue('companyName'),
+    userDepartmentName: readRuntimeValue('userDepartmentName'),
     topCompanyId: readRuntimeValue('topCompanyId'),
     groupDepartment: readRuntimeValue('groupDepartment')
   };
@@ -151,13 +183,15 @@ export function setupRuntimeAuthSync(store) {
       sid: state.user && state.user.token,
       customerCode: state.user && state.user.customerCode,
       userId: state.user && state.user.userId,
+      userName: state.user && state.user.userName,
       companyId: state.user && state.user.companyId,
       companyName: state.user && state.user.companyName,
+      userDepartmentName: state.user && state.user.userDepartmentName,
       groupDepartment: state.user && state.user.groupDepartment
     }),
-    ({ sid, customerCode, userId, companyId, companyName, groupDepartment }) => {
-      if (sid || customerCode || userId || companyId || companyName || groupDepartment) {
-        persistRuntimeAuth({ sid, customerCode, userId, companyId, companyName, groupDepartment });
+    ({ sid, customerCode, userId, userName, companyId, companyName, userDepartmentName, groupDepartment }) => {
+      if (sid || customerCode || userId || userName || companyId || companyName || userDepartmentName || groupDepartment) {
+        persistRuntimeAuth({ sid, customerCode, userId, userName, companyId, companyName, userDepartmentName, groupDepartment });
       } else {
         clearRuntimeAuthAliases();
       }

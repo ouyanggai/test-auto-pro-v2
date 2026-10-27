@@ -159,6 +159,7 @@ import moment from 'moment';
 import Api from '@/api';
 import { baseUrl,onlyOfficeUrl } from '@/config/env';
 import axios from 'axios'; //单独引入axios，用于excel的保存，避免返回格式不同方法报错
+import { getContractAmountFields } from '@/utils/contractAmount';
 
 /* eslint-disable */
 export default {
@@ -957,6 +958,7 @@ export default {
         console.log('formVal',formVal)
         
         let contractSubmitType = !this.isFlowInitiate ? type : that.clickMethod
+        let contractAmountFields = getContractAmountFields(formVal)
         let url = this.formPage ? Api.contractManage.contractInfo.modifyContract : (this.isFlowInitiate ? Api.contractManage.contractInfo.saveContractInfo : Api.contractManage.contractInfo.modifyContract)
         // let url = !this.isFlowInitiate || this.fromOutsidePage ? Api.contractManage.contractInfo.modifyContract : Api.contractManage.contractInfo.saveContractInfo
         let param = {
@@ -968,7 +970,9 @@ export default {
           // "contractBody":"合同主体",//（合同主体需要前端逻辑整理）
           "contractContent":formVal.contractContent,
           "contractTalk":formVal.contractTalk,
-          "contractSum":formVal.contractSum,
+          "currencyCode":contractAmountFields.currencyCode,
+          "originalAmount":contractAmountFields.originalAmount,
+          "contractSum":contractAmountFields.contractSum,
           "contractUserName":JSON.parse(formVal.contractUserName).name,
           "contractDepName":JSON.parse(formVal.contractDepName).name,
           "contractCompanyName":JSON.parse(formVal.contractCompanyName).name,

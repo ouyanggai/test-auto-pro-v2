@@ -49,7 +49,6 @@ import Api from '@/api';
 import { deepClone } from '@/utils';
 import DyTable from '@/components/DyTable';
 import { localstorageGet } from '@/utils/auth';
-import { parseJsonObject } from '@/utils/parse-value';
 
 export default {
   name: '',
@@ -136,7 +135,7 @@ export default {
     visible(val){
       if (val) {
         this.$nextTick(x=>{
-          const getMyNewVal = parseJsonObject(this.myValue);
+          let getMyNewVal = JSON.parse(this.myValue);
           if (getMyNewVal.flowList) {
             console.log('getMyNewVal.flowList',getMyNewVal.flowList)
             let selectTableIdList = getMyNewVal.flowList.map(x=>x.id);

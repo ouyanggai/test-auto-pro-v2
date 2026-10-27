@@ -62,9 +62,13 @@ module.exports = {
       }
     },
     optimization: {
+      runtimeChunk: 'single',
       splitChunks: {
         chunks: 'all',
+        maxInitialRequests: 8,
+        maxAsyncRequests: 8,
         cacheGroups: {
+          vendors: false,
           vendor: {
             name: 'chunk-vendor',
             test: /[\\/]node_modules[\\/]/,
@@ -74,12 +78,14 @@ module.exports = {
           elementUI: {
             name: 'chunk-elementUI',
             test: /[\\/]node_modules[\\/]element-ui[\\/]/,
-            priority: 20
+            priority: 20,
+            chunks: 'initial'
           },
           commons: {
             name: 'chunk-commons',
             test: resolve('src/components'),
             minChunks: 2,
+            chunks: 'initial',
             priority: 5,
             reuseExistingChunk: true
           }

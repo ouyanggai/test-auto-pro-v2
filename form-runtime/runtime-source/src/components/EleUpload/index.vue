@@ -1,6 +1,6 @@
 <template>
   <div style="display:flex;">
-    <el-upload ref="upload" action="" :http-request="httpRequest" :on-change="handleChange" class="upload"
+    <el-upload ref="upload" action="" :file-list="fileList" :http-request="httpRequest" :on-change="handleChange" :on-exceed="handleExceed" class="upload"
       :disabled="this.fileList.length >= uploadLimit" :limit=uploadLimit v-if="showOnly === false" :multiple="multiple"
       :accept="accept"
       >
@@ -85,6 +85,16 @@ export default {
     accept:{
       type:String,
       default:''
+    },
+    // 删除是否真实调接口删除文件：true 调平台文件删除接口；false 仅移除组件内数据（如变更表单，流程未提交前不真删）
+    isRealDelete: {
+      type: Boolean,
+      default: true
+    },
+    // 重名文件是否覆盖上传 true 覆盖上传；false 追加上传；
+    isDuplicateOverwrite: {
+      type: Boolean,
+      default: true
     }
   },
   watch: {
@@ -97,7 +107,8 @@ export default {
               name: item.originFileName || item.fileName,
               status: 'uploaded',
               id: item.id,
-              absolutelyFileUrl: item.fileUrl,
+              // 优先绝对地址；部分数据源（如各预算页回显）只提供 fileUrl，用 fileUrl 兜底
+              absolutelyFileUrl: item.absolutelyFileUrl || item.fileUrl,
               fileUrl: item.fileUrl,
               fileType: item.fileType,
               fileId:item.fileId,
@@ -149,7 +160,10 @@ export default {
         const size = file.size;
         if (size > 1024 * 1024 * this.size) {
           this.fileList.splice(this.fileList.length - 1, 1);
-          this.$message.error(`上传文件大小不能超过 ${this.size}MB`);
+          // 延迟到独立宏任务弹出：多选多个超限文件时若同 tick 连弹，element-ui 会因测高为 0 叠在同一位置
+          setTimeout(() => {
+            this.$message.error(`上传文件大小不能超过 ${this.size}MB`);
+          }, 50);
           return false;
         }
       }
@@ -172,15 +186,29 @@ export default {
               item => item.name == fileData.originFileName
             );
             if (index > -1) {
-              // list有
-              this.fileList[index].id = fileData.id;
-              this.fileList[index].status = 'uploaded';
-              this.fileList[index].name = fileData.originFileName;
-              this.fileList[index].fileUrl = fileData.fileUrl;
-              this.fileList[index].fileType = fileData.fileType;
-              this.fileList[index].percentage = 100;
-              this.fileList[index].absolutelyFileUrl = fileData.absolutelyFileUrl;
-              this.fileList[index].fileId = fileData.fileId
+              if(this.isDuplicateOverwrite) {
+                // list有 且 重名文件覆盖上传 true
+                this.fileList[index].id = fileData.id;
+                this.fileList[index].status = 'uploaded';
+                this.fileList[index].name = fileData.originFileName;
+                this.fileList[index].fileUrl = fileData.fileUrl;
+                this.fileList[index].fileType = fileData.fileType;
+                this.fileList[index].percentage = 100;
+                this.fileList[index].absolutelyFileUrl = fileData.absolutelyFileUrl;
+                this.fileList[index].fileId = fileData.fileId
+              } else {
+                // isDuplicateOverwrite=false 追加上传；重名按 原名(序号).扩展名 标号，序号递增至不重复
+                const obj = {
+                  name: this.buildUniqueFileName(fileData.originFileName || fileData.fileName),
+                  status: 'uploaded',
+                  id: fileData.id,
+                  absolutelyFileUrl: fileData.absolutelyFileUrl,
+                  fileUrl: fileData.fileUrl,
+                  fileType: fileData.fileType,
+                  percentage: 100
+                };
+                this.fileList.push(obj);
+              }
             } else {
               const obj = {
                 name: fileData.originFileName || fileData.fileName,
@@ -193,6 +221,8 @@ export default {
               };
               this.fileList.push(obj);
             }
+            // 上传成功后同步通知父组件（原有 change 仅在选择文件与删除时触发，补齐成功时机）
+            this.$emit('change', this.fileList);
           } else {
             const errorIndex = this.fileList.findIndex(item => item.uid == uid);
             if (errorIndex !== -1) {
@@ -205,6 +235,22 @@ export default {
         true
       );
     },
+    // 重名文件标号：与列表已有文件名重复时追加 (序号)（序号在扩展名前），序号递增至不重复为止
+    buildUniqueFileName(name) {
+      const raw = String(name == null ? '' : name).trim();
+      const nameSet = new Set(this.fileList.map(item => item.name));
+      if (!raw || !nameSet.has(raw)) return raw;
+      const dotIndex = raw.lastIndexOf('.');
+      const base = dotIndex > -1 ? raw.slice(0, dotIndex) : raw;
+      const ext = dotIndex > -1 ? raw.slice(dotIndex) : '';
+      let seq = 1;
+      let candidate = `${base}(${seq})${ext}`;
+      while (nameSet.has(candidate)) {
+        seq += 1;
+        candidate = `${base}(${seq})${ext}`;
+      }
+      return candidate;
+    },
     handleRemove(k) {
       this.$confirm('确认要删除吗?', '提示', {
         closeOnClickModal: false,
@@ -215,11 +261,17 @@ export default {
         .then(() => {
           const index = this.fileList.findIndex(item => item.id == k);
           if (index >= 0) {
-            var targetFile = this.fileList[index];
-            this.deleteFile(targetFile, index);
-            // if (!this.fileList.length) {
-            //   this.$refs.upload.clearFiles();
-            // }
+            if (this.isRealDelete) {
+              // 真实删除：调平台文件删除接口，成功后移除组件数据
+              var targetFile = this.fileList[index];
+              this.deleteFile(targetFile, index);
+            } else {
+              // 仅移除组件数据，不调删除接口（流程提交前文件保留在文件服务器）
+              this.fileList.splice(index, 1);
+              this.$message.success('操作成功');
+              this.$emit('deleteComplete');
+              this.$emit('change',this.fileList);
+            }
           }
           this.$refs.upload.clearFiles();
         })
@@ -244,7 +296,7 @@ export default {
             this.$emit('deleteComplete');
             this.$emit('change',this.fileList)
           } else {
-            // this.$message.success('操作失败')
+            this.$message.error(res.message || '操作失败');
           }
         });
     },
@@ -276,6 +328,9 @@ export default {
           window.URL.revokeObjectURL(url);
         });
       // }
+    },
+    handleExceed(files, fileList) {
+      this.$message.error(`最多只能上传${this.uploadLimit}个文件，已上传${this.fileList.length}个文件，当前已选择${files.length}个文件，请分批上传`);
     },
     handleChange(fileObj) {
       fileObj.percentage = 0;

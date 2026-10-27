@@ -19,7 +19,7 @@
       ref="dytableBody"
     >
       <el-table
-        class="multipleTable-class"
+        :class="{ 'multipleTable-class': true, 'dytable-column-resizable': hasResizableColumn && !isShowBorder }"
         v-loading="loading"
         :max-height="maxTableHeight"
         :height="height"
@@ -29,7 +29,7 @@
         ref="multipleTable"
         :data="list"
         :stripe="isStripe"
-        :border="isShowBorder"
+        :border="isShowBorder || hasResizableColumn"
         :show-header="isShowHeader"
         :show-summary = "showSummary"
         :summary-method="summaryMethod"
@@ -40,17 +40,20 @@
         @select-all="handleSelectAll"
         @row-click="rowClick"
         @selection-change="handleSelectionChange"
+        @header-dragend="handleHeaderDragEnd"
       >
         <el-table-column
           v-if="showSerial"
           label="序号"
           type="index"
           width="100"
+          :resizable="false"
         >
         </el-table-column>
         <el-table-column
           v-if="isDrag"
           width="55"
+          :resizable="false"
         >
           <i
             class="el-icon-rank sortable-move"
@@ -62,11 +65,13 @@
           :selectable="selectable"
           type="selection"
           width="55"
+          :resizable="false"
         >
         </el-table-column>
         <el-table-column
           v-if="showRadio"
           width="55"
+          :resizable="false"
         >
           <template slot-scope="scope">
             <el-radio v-model="currentRowId" :label="scope.row.id"><i></i></el-radio>
@@ -85,6 +90,8 @@
             :show-overflow-tooltip="value.showTooltip"
             :align="value.align?value.align:'left'"
             :min-width="value.minWidth || ''"
+            :resizable="resizable && isResizableColumn(value)"
+            :render-header="(h, scope) => renderColumnHeader(h, scope)"
             v-if="!value.noShowColumn"
           >
             <template slot-scope="scope">
@@ -114,6 +121,8 @@
           :class="'op'"
           :width="actions[0].width || ''"
           :fixed="actions[0].actionFixed"
+          :resizable="false"
+          :render-header="(h, scope) => renderColumnHeader(h, scope)"
         >
           <template slot-scope="scope">
             <div class="action-list">
@@ -352,6 +361,14 @@ export default {
       default: false
     },
     /**
+    * 是否允许拖动表头调整列宽
+    * @param {Boolean}
+    */
+    resizable: {
+      type: Boolean,
+      default: true
+    },
+    /**
   * 排序方法
   * @param {Function}
   */
@@ -428,6 +445,11 @@ export default {
       default:null
     },
     rowClassName: Function // 行的 className 的回调方法
+  },
+  computed: {
+    hasResizableColumn() {
+      return this.resizable && Object.keys(this.keys || {}).some(key => this.isResizableColumn(this.keys[key]));
+    }
   },
   watch: {
     list(val, oldval) {
@@ -509,6 +531,51 @@ export default {
     handleSelectAll(selection){
       this.$emit('handleSelectAll', selection);
     },
+    handleHeaderDragEnd(newWidth, oldWidth, column, event) {
+      this.$emit('header-dragend', newWidth, oldWidth, column, event);
+    },
+    renderColumnHeader(createElement, { column }) {
+      if (!column.resizable) {
+        return column.label;
+      }
+      return createElement('span', { class: 'dytable-column-header' }, [
+        createElement('span', { class: 'dytable-column-label' }, [column.label]),
+        createElement('i', {
+          class: 'el-icon-more dytable-column-resize-icon',
+          attrs: { title: '拖动调整列宽' },
+          on: {
+            mousedown: event => this.handleResizeIconMouseDown(event, column)
+          }
+        })
+      ]);
+    },
+    isResizableColumn(column) {
+      return (typeof column === 'string' ? column : column && column.label) === '标题';
+    },
+    handleResizeIconMouseDown(event, column) {
+      const table = this.$refs.multipleTable;
+      const tableHeader = table && table.$refs.tableHeader;
+      if (!tableHeader || !column || !column.resizable) return;
+
+      let headerCell = event.target;
+      while (headerCell && headerCell.tagName !== 'TH') {
+        headerCell = headerCell.parentNode;
+      }
+      if (!headerCell) return;
+
+      const rect = headerCell.getBoundingClientRect();
+      const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft || 0;
+      const resizeEvent = Object.assign({}, event, {
+        target: event.target,
+        clientX: rect.right - 1,
+        pageX: rect.right - 1 + scrollLeft
+      });
+
+      event.preventDefault();
+      event.stopPropagation();
+      tableHeader.handleMouseMove(resizeEvent, column);
+      tableHeader.handleMouseDown(resizeEvent, column);
+    },
     handleClick(row) {
       // console.log(row);
     },
@@ -568,6 +635,65 @@ export default {
     text-overflow: ellipsis !important;
     overflow: hidden !important;
     white-space: nowrap !important;
+  }
+
+  // Element UI requires border mode to enable column resizing. Keep the
+  // existing borderless appearance when resizing is enabled implicitly.
+  .el-table.dytable-column-resizable.el-table--border {
+    border-top: none;
+    border-left: none;
+
+    .el-table__cell {
+      border-right: none;
+    }
+
+    .el-table__header-wrapper,
+    .el-table__body-wrapper,
+    .el-table__fixed,
+    .el-table__fixed-right,
+    .el-table__fixed-header-wrapper,
+    .el-table__fixed-right-patch {
+      border-top: none;
+      border-left: none;
+    }
+  }
+
+  // Make Element UI's resize proxy easy to see while dragging a column.
+  .el-table .el-table__column-resize-proxy {
+    border-left: 2px solid #409eff;
+    z-index: 100;
+    pointer-events: none;
+  }
+
+  .el-table .cell .dytable-column-header {
+    display: block !important;
+    position: relative;
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    padding-right: 16px;
+    overflow: visible !important;
+    white-space: nowrap !important;
+  }
+
+  .el-table .cell .dytable-column-label {
+    display: block;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  .el-table .cell .dytable-column-resize-icon {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    width: 14px;
+    color: #409eff;
+    font-size: 13px;
+    line-height: 1;
+    text-align: center;
+    cursor: col-resize;
+    transform: translateY(-50%) rotate(90deg);
   }
 
   .el-table--border::after,

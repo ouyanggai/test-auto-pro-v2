@@ -2,7 +2,8 @@
 <template>
   <div>
     <!-- 审批人选择 -->
-    <PersonSelectDialog :visible.sync="nodeChooseVisible" v-if="nodeChooseVisible" @getSelectPerson="getSelectPerson" :isProject="true" />
+    <PersonSelectDialog :visible.sync="nodeChooseVisible" v-if="nodeChooseVisible" @getSelectPerson="getSelectPerson" :isProject="true"
+      :selection-prompt="isCarbonCopyNode ? '请选择要抄送的人' : ''" />
 
     <!-- 并行审批人自选 -->
     <el-dialog v-if="parallelChooseVisible" width="400px" title="并行节点自选" class="nodePerson"
@@ -12,7 +13,7 @@
         <span style="line-height: 28px;">{{ chooseNode.nodeName }} <span>：</span> </span>
         <span v-for="audit in chooseNode.nodeAuditList" :key="audit.id"> {{ audit.name }} </span>
         <el-button type="text" size="mini" @click="chooseParallelNode(chooseNode)">
-          {{ chooseNode.nodeAuditList.length ? '重新选择' : '选择人员' }}</el-button>
+          {{ chooseNode.nodeAuditList.length ? (chooseNode.nodeType == 'carbon_copy' ? '重新选择抄送人' : '重新选择') : (chooseNode.nodeType == 'carbon_copy' ? '选择抄送人' : '选择人员') }}</el-button>
       </div>
       <span slot="footer" class="dialog-footer">
         <el-button type="primary" @click="handleSaveParallelChooseNode">提 交</el-button>
@@ -28,7 +29,7 @@
           <span v-if="branch.auditType == 'run_node_choose'">
             <span v-for="(audit, index) in chooseBranchNodeList" :key="index"> {{ audit.name }} </span>
             <el-button type="primary" :disabled="branch.nextNodeTemplateId != chooseBranchNode.nextNodeTemplateId"
-              @click="handleChooseBranchNode">选择审批人</el-button>
+              @click="handleChooseBranchNode">{{ branch.nodeType == 'carbon_copy' ? '选择抄送人' : '选择审批人' }}</el-button>
           </span>
           <span v-if="branch.auditType == 'initiator'">由发起人审批</span>
           <span v-if="branch.auditType == 'assign'">由流程配置人员审批</span>
@@ -39,15 +40,23 @@
         <el-button type="primary" @click="handleSaveBranchChooseNode">提 交</el-button>
       </span>
     </el-dialog>
+
+    <extended-attribute-users
+      :nextNodeProxyId="currentChooseNodeId"
+      :visible.sync="extendedVisible"
+      :personList="extendedPersonList"
+      @confirmChooseExtendPerson="confirmChooseExtendPerson"
+    />
   </div>
 </template>
 
 <script>
 import Api from '@/api'
 import PersonSelectDialog from '@/views/GroupApproveManage/components/PersonSelectDialog.vue';
+import extendedAttributeUsers from '@/components/extendedAttributeUsers.vue';
 export default {
   name:'Flow',
-  components: {PersonSelectDialog},
+  components: {PersonSelectDialog, extendedAttributeUsers},
   props: ['flowId','flowNodeType','nextNodeProxyId','flowInstanceId','formId'],//flowId---->流程id ,flowNodeType-->下一节点的类型
   data() {
     return {
@@ -68,7 +77,11 @@ export default {
       nextAuditorList:[],
       isReInitiate:false,
       isNoFlow:true,
-      isDraft:false
+      isDraft:false,
+      currentChooseNodeId: '',
+      isCarbonCopyNode: false,
+      extendedVisible: false,
+      extendedPersonList: []
 
     };
   },
@@ -125,6 +138,8 @@ export default {
                     {
                       nodeName: parallelNode.childFlowNodeTemplate.nodeName,
                       nextNodeTemplateId: parallelNode.nextNodeTemplateId,
+                      nodeType: parallelNode.childFlowNodeTemplate.type,
+                      auditType: parallelNode.childFlowNodeTemplate.flowNodeAuditConfig.auditType,
                       nodeAuditList: []
                     }
                   );
@@ -203,7 +218,8 @@ export default {
             }
           });
         } else {
-          this.$message.warning('至少选择一位审批人');
+          const parallelNode = this.parallelChooseNodes.find(item => item.nextNodeTemplateId == this.parallelNextNodeTemplateId);
+          this.$message.warning(parallelNode && parallelNode.nodeType == 'carbon_copy' ? '请选择要抄送的人' : '至少选择一位审批人');
           return false;
         }
         this.parallelNextNodeTemplateId = '';
@@ -212,33 +228,39 @@ export default {
         // 手动分支-自选
         if (data.checkboxPersonGroup && data.checkboxPersonGroup.length > 0) {
           this.chooseBranchNodeList = JSON.parse(JSON.stringify(data.checkboxPersonGroup));
+          const nodeProxyId = this.chooseBranchNode.nextNodeTemplateId;
+          this.nextAuditorList = this.nextAuditorList.filter(item => item.nodeProxyId != nodeProxyId);
           data.checkboxPersonGroup.forEach(item => {
             this.nextAuditorList.push(
               {
                 bizId: item.id,
-                nodeProxyId: this.chooseBranchNode.nextNodeTemplateId
+                nodeProxyId,
+                auditDetailType: 'personnel'
               }
             );
           });
           this.nodeChooseVisible = false;
           // this.submitFinal(true);
         } else {
-          this.$message.warning('至少选择一位审批人');
+          this.$message.warning(this.chooseBranchNode.nodeType == 'carbon_copy' ? '请选择要抄送的人' : '至少选择一位审批人');
           return false;
         }
       } else {
         // 普通审批人自选
         this.checkboxPersonGroup = data.checkboxPersonGroup.map(x => x);
-        this.nextAuditorList = [];
+        if (!this.checkboxPersonGroup.length) {
+          this.$message.warning(this.isCarbonCopyNode ? '请选择要抄送的人' : '至少选择一位审批人');
+          return;
+        }
+        const nodeProxyId = this.currentChooseNodeId || this.nextNodeProxyId;
+        this.nextAuditorList = this.nextAuditorList.filter(item => item.nodeProxyId != nodeProxyId);
         this.checkboxPersonGroup.map(item => {
           this.nextAuditorList.push({
-            bizId: item.id
+            bizId: item.id,
+            nodeProxyId,
+            auditDetailType: 'personnel'
           });
         });
-        if(!this.checkboxPersonGroup.length){
-          this.$message.warning('至少选择一位审批人');
-          return
-        }
         this.submitFinal(true);
       }
     },
@@ -248,11 +270,14 @@ export default {
     // 并行节点自选
     chooseParallelNode(node) {
       this.parallelNextNodeTemplateId = node.nextNodeTemplateId;
+      this.currentChooseNodeId = node.nextNodeTemplateId;
+      this.isCarbonCopyNode = node.nodeType == 'carbon_copy';
       this.nodeChooseVisible = true;
     },
     // 发起人-并行节点自选审批人保存后提交
     async handleSaveParallelChooseNode() {
-      this.nextAuditorList = [];
+      const parallelNodeIds = this.parallelChooseNodes.map(item => item.nextNodeTemplateId);
+      this.nextAuditorList = this.nextAuditorList.filter(item => parallelNodeIds.indexOf(item.nodeProxyId) === -1);
       let superVisorId = '';
       let managerId = '';
       const isHasSuperVisor = this.parallelChooseNodes.some(node => node.auditType == 'department_supervisor');
@@ -263,17 +288,19 @@ export default {
       if (isHasViceManager) {
         managerId = await this.getSuperVisorOrLeaderId('branched_passage_manager');
       }
-      let hasNoChoose = false;// 是否有未选择审批人的节点
+      const missingNode = this.parallelChooseNodes.find(item => item.auditType == 'run_node_choose' &&
+        !(item.nodeAuditList || []).length);
+      if (missingNode) {
+        return this.$message.warning(missingNode.nodeType == 'carbon_copy' ? '请选择要抄送的人' : '该分支需选择审批人，请先选择');
+      }
       this.parallelChooseNodes.forEach(item => {
         if (item.auditType == 'run_node_choose') {
-          if (!item.nodeAuditList.length) {
-            hasNoChoose = true;
-          }
           item.nodeAuditList.forEach(auditNode => {
             this.nextAuditorList.push(
               {
                 bizId: auditNode.id,
-                nodeProxyId: item.nextNodeTemplateId
+                nodeProxyId: item.nextNodeTemplateId,
+                auditDetailType: 'personnel'
               }
             );
           });
@@ -282,30 +309,22 @@ export default {
           this.nextAuditorList.push(
             {
               bizId: item.auditType == 'department_supervisor' ? superVisorId : managerId,
-              nodeProxyId: item.nextNodeTemplateId
+              nodeProxyId: item.nextNodeTemplateId,
+              auditDetailType: 'personnel'
             }
           );
-        } else {
-          if (!item.nodeAuditList.length) {
-            hasNoChoose = true;
-          }
         }
       });
-      if (hasNoChoose) {
-        this.$message.warning('当前并行分支下有节点审批人未指定');
-        this.parallelChooseVisible = true;
-        return false;
-      } else {
-        this.parallelChooseVisible = false;
-        // 无表单流程
-        this.submitFinal(true);
-      }
+      this.parallelChooseVisible = false;
+      // 无表单流程
+      this.submitFinal(true);
     },
     handleCloseBranchChoose() {
       this.chooseBranchNode = {};
       this.branchChooseVisible = false;
     },
     handleChangeChooseBranch(branch) {
+      this.isCarbonCopyNode = branch.nodeType == 'carbon_copy';
       if (branch.auditType != 'run_node_choose') {
         this.chooseBranchNodeList = [];
       }
@@ -319,8 +338,11 @@ export default {
       if (this.chooseBranchNode && this.chooseBranchNode.nextNodeTemplateId) {
         if (this.chooseBranchNode.auditType == 'run_node_choose') {
           // 自选节点
-          if (!this.nextAuditorList.length) {
-            this.$message.warning('该分支需选择审批人，请先选择');
+          const hasSelectedApprover = this.nextAuditorList.some(item =>
+            item.nodeProxyId == this.chooseBranchNode.nextNodeTemplateId && item.bizId
+          );
+          if (!hasSelectedApprover) {
+            this.$message.warning(this.chooseBranchNode.nodeType == 'carbon_copy' ? '请选择要抄送的人' : '该分支需选择审批人，请先选择');
           } else {
             // if (this.selectFlowType == 'enterprise') {
             //   // 表单流程
@@ -349,6 +371,7 @@ export default {
       const param = {
         data: {
           flowProxyId: this.flowId,
+          formProxyId: this.formId,
           flowInstanceBizRelevanceList: [
             {
               otherBiz: 'project',
@@ -367,33 +390,41 @@ export default {
           }
         }
       };
-      if (customChooseFlag) { // 自选审批人的节点
-        param.nextAuditorList = this.nextAuditorList;
+      if (!this.isDraft && this.nextAuditorList.length) {
+        param.nextAuditorList = this.nextAuditorList.map(item => ({
+          ...item,
+          auditDetailType: item.auditDetailType || 'personnel'
+        }));
       }
       if (this.chooseBranchNode && this.chooseBranchNode.nextNodeTemplateId) {
         param.fixedExecuteNodeId = this.chooseBranchNode.nextNodeTemplateId;
       }
       if (this.parallelChooseNodes && this.parallelChooseNodes.length) { // 并行多分支
-        var nextAuditorList = [];
+        const parallelNodeIds = this.parallelChooseNodes.map(item => item.nextNodeTemplateId);
+        var nextAuditorList = this.nextAuditorList.filter(item => parallelNodeIds.indexOf(item.nodeProxyId) === -1);
         this.parallelChooseNodes.forEach(item => {
           var nodeProxyId = item.nextNodeTemplateId;
           var personList = item.nodeAuditList;
           personList.forEach(el => {
             var bizId = el.id;
             nextAuditorList.push({
-              nodeProxyId, bizId
+              nodeProxyId,
+              bizId,
+              auditDetailType: 'personnel'
             });
           });
         });
         param.nextAuditorList = nextAuditorList;
       }
-      if(this.isDraft)param.data.status = 'draft'
-      var api = Api.schedule.saveFlowInstance
-      if(this.isReInitiate){
-        api = Api.schedule.saveFlowInstanceAgain
-        delete param.data.flowProxyId
-        param.data.id = this.flowInstanceId
-        if(this.isDraft)api = Api.schedule.saveFlowInstance
+      if (this.isDraft) {
+        param.data.status = 'draft';
+      } else {
+        param.data.status = 'run';
+      }
+      let api = this.isDraft ? Api.schedule.saveFlowInstance : Api.newWorkflowCenter.flowSubmit;
+      if (this.isReInitiate) {
+        param.data.id = this.flowInstanceId;
+        api = this.isDraft ? Api.schedule.saveFlowInstance : Api.newWorkflowCenter.flowReSubmit;
       }
       // console.log('this.isReInitiate',this.isReInitiate)
       // return
@@ -405,17 +436,11 @@ export default {
           if (res.isSuccess) {
             this.$message.success('提交成功！');
             this.$bus.$emit('success')
-          } else {
-            if (res.data) {
-              // this.flowNodeType = 'run_node_choose';
-              this.nodeChooseVisible = true;
-            } else {
-              this.checkboxPersonGroup = [];
-              this.$message.error(res.message);
-            }
           }
         }
-      );
+      ).catch(err => {
+        if (!this.isDraft) this.flowErrorHandle(err);
+      });
     },
     submitFinalForFlow(flag){
       this.$parent.$refs.generateForm.getData().then(value => {
@@ -424,6 +449,7 @@ export default {
         const param = {
           data: {
             id: this.flowInstanceId,
+            flowProxyId: this.flowId,
             formProxyId: this.formId,
             flowInstanceBizRelevanceList: [
               {
@@ -437,14 +463,17 @@ export default {
           }
         };
         if (flag) {
-          param.nextAuditorList = this.nextAuditorList;
+          param.nextAuditorList = this.nextAuditorList.map(item => ({
+            ...item,
+            auditDetailType: item.auditDetailType || 'personnel'
+          }));
         }
         if (this.chooseBranchNode && this.chooseBranchNode.nextNodeTemplateId) {
           param.fixedExecuteNodeId = this.chooseBranchNode.nextNodeTemplateId;
         }
-        if(this.isDraft)param.data.status = 'draft'
+        param.data.status = this.isDraft ? 'draft' : 'run';
         this.$axios.post(
-          Api.schedule.saveFlowInstanceAgain,
+          this.isDraft ? Api.schedule.saveFlowInstance : Api.newWorkflowCenter.flowReSubmit,
           param,
           res => {
             if (res.isSuccess) {
@@ -457,11 +486,11 @@ export default {
               // this.$emit('resetParallelNodeChooseList', []);
               // this.$message.success('提交成功！');
               // this.closeCheck();
-            } else {
-              this.$message.error(res.message);
             }
           }
-        );
+        ).catch(err => {
+          if (!this.isDraft) this.flowErrorHandle(err);
+        });
       }).catch(e => {
         console.log(e);
       });
@@ -481,13 +510,17 @@ export default {
             var id = res?.data?.id || ''
             if(id){
               const nextAuditor = {
-                bizId: id
+                bizId: id,
+                auditDetailType: 'personnel'
               };
               if (nextNodeId) {
                 // 手动分支-选择主管或副总类型节点
                 nextAuditor.nodeProxyId = nextNodeId;
               }
-              this.nextAuditorList = [nextAuditor];
+              if (nextNodeId) {
+                this.nextAuditorList = this.nextAuditorList.filter(item => item.nodeProxyId != nextNodeId);
+              }
+              this.nextAuditorList.push(nextAuditor);
               // this.enterpriseHandleSubmit(true);
               if (this.selectFlowType == 'enterprise') {
                 // 表单流程
@@ -523,7 +556,63 @@ export default {
             }
           }
         }
-      );
+        ).catch(err => {
+          if (!this.isDraft) this.flowErrorHandle(err);
+        });
+    },
+    confirmChooseExtendPerson(person) {
+      const nodeProxyId = person.nodeProxyId || this.currentChooseNodeId;
+      this.nextAuditorList = this.nextAuditorList.filter(item => item.nodeProxyId != nodeProxyId);
+      this.nextAuditorList.push({
+        nodeProxyId,
+        bizId: person.id,
+        name: person.name,
+        auditDetailType: 'personnel'
+      });
+      this.extendedVisible = false;
+      this.submitFinal(true);
+    },
+    flowErrorHandle(res) {
+      const data = res && res.data;
+      if (data && data.errorType === 'extended_attribute_users') {
+        this.extendedPersonList = data.fullUserInfoList || [];
+        this.currentChooseNodeId = data.nodeProxy && data.nodeProxy.id || '';
+        this.extendedVisible = true;
+        return;
+      }
+      if (data && data.errorType === 'run_node_choose') {
+        this.isCarbonCopyNode = data.node && data.node.type === 'carbon_copy';
+        this.currentChooseNodeId = data.node && data.node.id || '';
+        this.nextNodeProxyId = this.currentChooseNodeId;
+        this.nodeChooseVisible = true;
+        return;
+      }
+      if (data && data.errorType === 'custom_choose') {
+        this.manualChooseNodes = (data.branchNodes || []).map((node, index) => ({
+          nextNodeTemplateId: node.id,
+          nodeName: node.nodeName,
+          nodeType: node.type,
+          branchName: node.nodeName || `分支${index + 1}`,
+          auditType: node.flowNodeAuditConfig && node.flowNodeAuditConfig.auditType
+        }));
+        this.branchChooseVisible = this.manualChooseNodes.length > 0;
+        return;
+      }
+      if (data && data.errorType === 'parallel_choose') {
+        this.parallelChooseNodes = (data.branchNodes || [])
+          .filter(node => node.flowNodeAuditConfig && node.flowNodeAuditConfig.auditType === 'run_node_choose')
+          .map(node => ({
+            nodeName: node.nodeName,
+            nextNodeTemplateId: node.flowNodeAuditConfig.nodeTemplateId || node.id,
+            nodeType: node.type,
+            auditType: node.flowNodeAuditConfig.auditType,
+            nodeAuditList: []
+          }));
+        this.parallelChooseVisible = this.parallelChooseNodes.length > 0;
+        if (!this.parallelChooseVisible) this.$message.error(res.message || '流程节点人员配置错误');
+        return;
+      }
+      this.$message.error(res && (res.message || res.errorMsg) || '流程提交失败');
     },
     getSuperVisorOrLeaderId(nodeAuditType) {
       // 并行分支获取副总和主管的id作为下一审批人传参

@@ -705,7 +705,7 @@ async function ensureLatestFlowSource (): Promise<void> {
   const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const syncScript = path.join(serviceRoot, 'scripts', 'sync-flow-source.js')
   const buildScript = path.join(serviceRoot, 'scripts', 'build-native-page.js')
-  // 启动只校验已经准备的候选；发布包必须固定在准备时的全过程 SHA，不能在服务启动时漂移。
+  // 启动只校验已经准备的候选；发布包必须保持本次两侧来源 SHA，不能在服务启动时漂移。
   if (process.env.EXECUTOR_DISABLE_AUTO_SYNC !== '1') {
     childProcess.execFileSync(process.execPath, [syncScript, '--verify-prepared'], {
       cwd: serviceRoot,

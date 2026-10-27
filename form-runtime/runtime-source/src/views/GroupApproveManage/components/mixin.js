@@ -1,4 +1,5 @@
 import Api from '@/api';
+import { syncCaseFlowStatusAfterRollback } from '../flowBusinessLifecycle';
 const mixin = {
   methods: {
     setTracking(){
@@ -64,11 +65,22 @@ const mixin = {
               withdrawDesc: this.approveForm.approveMessage
             }
           },
-          (res) => {
+            (res) => {
             if (res.isSuccess) {
-              this.$message.success('已回退到上一审批节点');
-              this.nodeChooseVisible = false;
-              this.$emit('postExamine');
+              syncCaseFlowStatusAfterRollback({
+                flowType: this.selectFlowType,
+                flowInstanceId,
+                bizRelevanceList: this.flowInstanceBizRelevanceList,
+                request: (url, params) => this.$axios.post(url, params)
+              }).then(() => {
+                this.$message.success('已回退到上一审批节点');
+                this.nodeChooseVisible = false;
+                this.$emit('postExamine');
+              }).catch(error => {
+                this.$message.warning(error.message || '流程已回退，但案件状态同步失败');
+                this.nodeChooseVisible = false;
+                this.$emit('postExamine');
+              });
             } else { }
           }
         );

@@ -363,6 +363,30 @@ export default {
         }
       })
     },
+    // 转发流程会保留原业务关联，需要根据原流程实例 ID 重新查询
+    getOriginalFlowInstance(flow) {
+      const originalFlow = (flow.flowInstanceBizRelevanceList || []).find(item => item.otherBiz == 'transpond_flowInstanceId')
+      const originalFlowInstanceId = originalFlow?.otherBizId
+      if (!originalFlowInstanceId || originalFlowInstanceId == flow.id) {
+        return Promise.resolve(flow)
+      }
+      const data = {
+        id: originalFlowInstanceId,
+        useScope: 'invest',
+        initiator: 'all'
+      }
+      return new Promise((resolve, reject) => {
+        this.$axios.post(Api.schedule.getFlowInstanceList, { data, pagination: false }, res => {
+          if (res.isSuccess && res.data?.length) {
+            const originalInstance = res.data.find(item => item.id == originalFlowInstanceId || item.flowInstanceId == originalFlowInstanceId)
+            resolve(originalInstance || res.data[0])
+          } else {
+            this.$message.error(res.message || '未找到原流程数据')
+            resolve()
+          }
+        })
+      })
+    },
     // 获取流程实例id
     getInstanceId(id, type,taskStatus) {
       var otherBiz = type
@@ -387,7 +411,7 @@ export default {
           if (res.isSuccess) {
             let data = res?.data || []
             if (data.length) {
-              resolve(data[0])
+              resolve(this.getOriginalFlowInstance(data[0]))
             } else {
               this.$message.error('数据已删除')
               resolve()
