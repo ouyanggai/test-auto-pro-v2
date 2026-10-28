@@ -1,5 +1,4 @@
-// Plan 59 / Run 169 复审 §3.4 回归：终态事件必须携带本步落账明细（节点·动作·目标写接口·结果），
-// 不能只写用户可见的泛化 label。原先 Finish 只接 label、不接 detail，事件流看不到终态节点的接口和结果。
+// 回归结果待确认终态事件保留步骤业务上下文与结果原因；接口轨迹由动作详情单独展示。
 package executor_test
 
 import (
@@ -12,10 +11,9 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
-// TestSettleDetailCarriedIntoTerminalEvent 锁定结果待确认终态：路径运行收尾事件带本步节点接口明细。
-// 场景与 TestF016AuditUncertainStopsInAwaitingReconciliation 相同（成功声明 + 待办未变 → 不确定），
-// 但断言点是终态事件的 detail：必须非空且包含本步实际调用的目标写接口。
-func TestSettleDetailCarriedIntoTerminalEvent(t *testing.T) {
+// TestUncertainTerminalEventKeepsBusinessContext 锁定结果待确认终态事件的步骤、节点、动作、执行人与原因。
+// 总览事件不重复动作详情中的逐接口轨迹，避免把事件流与接口明细混为一谈。
+func TestUncertainTerminalEventKeepsBusinessContext(t *testing.T) {
 	fakeTarget := &fakeTarget{
 		instance:    fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
 		dueTaskID:   "task-1",
@@ -38,9 +36,19 @@ func TestSettleDetailCarriedIntoTerminalEvent(t *testing.T) {
 	}
 	detail := runState.finishDetails[0]
 	if strings.TrimSpace(detail) == "" {
-		t.Fatalf("终态事件必须携带本步落账明细（节点·动作·接口·结果），实际为空")
+		t.Fatalf("终态事件必须携带本步业务上下文和结果原因，实际为空")
 	}
-	if preview.Endpoint != "" && !strings.Contains(detail, preview.Endpoint) {
-		t.Fatalf("终态明细应包含本步目标写接口 %q，实际 %q", preview.Endpoint, detail)
+	for _, want := range []string{
+		"第 2 步",
+		"节点「部门审批」·同意",
+		"执行人：测试账号",
+		"目标接口已返回成功，但执行结果暂时无法确认",
+	} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("终态事件缺少业务上下文 %q，实际 %q", want, detail)
+		}
+	}
+	if strings.Contains(detail, preview.Endpoint) {
+		t.Fatalf("终态事件不应重复动作详情中的目标接口 %q，实际 %q", preview.Endpoint, detail)
 	}
 }
