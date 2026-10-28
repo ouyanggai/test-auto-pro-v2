@@ -171,7 +171,6 @@ func sanitizePath(raw string) string {
 // isFlowPath 判定是否主写端点（与完成检测口径一致）。
 func isFlowPath(raw string) bool {
 	return strings.Contains(raw, "/web/flowInstanceApi/submit") ||
-		strings.Contains(raw, target.RuntimeSubmitEndpoint) ||
 		strings.Contains(raw, target.RuntimeReSubmitEndpoint) ||
 		strings.Contains(raw, target.RuntimeAuditEndpoint) ||
 		strings.Contains(raw, "/flowInstanceApi/audit") ||

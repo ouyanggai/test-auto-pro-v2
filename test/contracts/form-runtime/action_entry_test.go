@@ -32,7 +32,7 @@ func TestRuntimeActionEntries(t *testing.T) {
 func TestForwardIsTheOnlyCompositeAction(t *testing.T) {
 	expected := map[string]string{
 		"save_draft":        "/web/flowInstanceApi/submit",
-		"submit":            target.RuntimeSubmitEndpoint,
+		"submit":            "/web/flowInstanceApi/submit",
 		"storage_form_data": "/web/flowInstanceApi/storageFormData",
 		"approve":           target.RuntimeAuditEndpoint,
 		"reject":            target.RuntimeAuditEndpoint,

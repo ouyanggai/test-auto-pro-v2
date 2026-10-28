@@ -37,8 +37,9 @@ const (
 	RelationFileDeleteEndpoint = "/web/file/api/relationFile/deleteByRelationIdAndFileIds"
 )
 
-// RuntimeSubmitEndpoint 是页面正式发起流程的新工作流端点；保存草稿仍使用 WriteEndpointSubmit。
-const RuntimeSubmitEndpoint = "/newWorkflowCenter/flowInstance/submit"
+// RuntimeSubmitEndpoint 已被全过程 test（提交 2e10a724b）回退删除：页面正式提交与
+// 保存草稿重新共用 WriteEndpointSubmit，靠 data.checkPermissions（权限预检）与
+// data.status（draft/run）区分语义，不再保留新提交端点登记。
 
 // RuntimeReSubmitEndpoint 是页面重新发起流程的新工作流端点。
 const RuntimeReSubmitEndpoint = "/newWorkflowCenter/flowInstance/reSubmit"

@@ -26,9 +26,9 @@ type ActionEntry struct {
 }
 
 // 写端点直接引用 adapter 的唯一常量，避免散落字面量。
+// 正式提交端点已被全过程 test 回退为旧 submit，与 save_draft 同端点、按载荷语义区分。
 var (
 	endpointSubmit          = target.WriteEndpointSubmit
-	endpointRuntimeSubmit   = target.RuntimeSubmitEndpoint
 	endpointRuntimeReSubmit = target.RuntimeReSubmitEndpoint
 	endpointRuntimeAudit    = target.RuntimeAuditEndpoint
 	endpointStorageForm     = target.WriteEndpointStorageForm
@@ -51,7 +51,7 @@ var runtimeActionEntries = map[string]ActionEntry{
 	},
 	"submit": {
 		Action: "submit", Host: "initiate", EntryMethod: "sumbitFlow('submit')",
-		WriteEndpoints: []string{endpointRuntimeSubmit},
+		WriteEndpoints: []string{endpointSubmit},
 		// 提交可能在首次调用后要求选择分支/人员：继续方法仍是提交入口（formMakingFormBusiness→enterpriseHandleSubmit）。
 		ContinueMethod: "handleSaveBranchChooseNode/handleSaveParallelChooseNode/getSelectPerson",
 	},

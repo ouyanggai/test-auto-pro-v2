@@ -25,28 +25,27 @@ const rejected = (message: string, data: Record<string, unknown> = {}) => encode
 const base = { baselineSeq: 0, hardTimeoutMs: 5000, idleWindowMs: 20 }
 
 test('期望写端点 HTTP 200 且未明确拒绝时判 success', async () => {
-  const verdict = await settleCompletion({ ...base, action: 'submit', trace: seedTrace([{ method: 'POST', url: 'https://t/api/newWorkflowCenter/flowInstance/submit', state: 'fulfilled', body: ok({ id: 'x' }) }]) })
+  const verdict = await settleCompletion({ ...base, action: 'submit', trace: seedTrace([{ method: 'POST', url: 'https://t/api/web/flowInstanceApi/submit', state: 'fulfilled', body: ok({ id: 'x' }) }]) })
   assert.equal(verdict.status, 'success')
 })
 
-test('旧 submit 权限预检不能冒充正式提交，新端点成功才判 success', async () => {
+test('旧 submit 权限预检不能冒充正式提交，同端点无预检键的正式写才判 success', async () => {
   const verdict = await settleCompletion({
     ...base,
     action: 'submit',
     trace: seedTrace([
       { method: 'POST', url: 'https://t/api/web/flowInstanceApi/submit', state: 'fulfilled', body: ok({ message: '权限校验通过' }), requestBody: JSON.stringify({ data: { checkPermissions: 'first' } }) },
-      { method: 'POST', url: 'https://t/api/newWorkflowCenter/flowInstance/submit', state: 'fulfilled', body: ok({ data: { id: 'new-instance' } }) }
+      { method: 'POST', url: 'https://t/api/web/flowInstanceApi/submit', state: 'fulfilled', body: ok({ data: { id: 'new-instance' } }) }
     ])
   })
   assert.equal(verdict.status, 'success')
 })
 
-test('保存草稿仍使用旧 submit 端点，正式提交不再接受旧端点', async () => {
+test('保存草稿与正式提交同用旧 submit 端点，回退后各自判 success', async () => {
   const draft = await settleCompletion({ ...base, action: 'save_draft', trace: seedTrace([{ method: 'POST', url: 'https://t/api/web/flowInstanceApi/submit', state: 'fulfilled', body: ok() }]) })
   assert.equal(draft.status, 'success')
   const submit = await settleCompletion({ ...base, action: 'submit', trace: seedTrace([{ method: 'POST', url: 'https://t/api/web/flowInstanceApi/submit', state: 'fulfilled', body: ok() }]) })
-  assert.equal(submit.status, 'failed')
-  assert.match(String(submit.message), /newWorkflowCenter/)
+  assert.equal(submit.status, 'success')
 })
 
 test('重新提交使用新工作流端点且响应丢失按待确认处理', async () => {
@@ -59,7 +58,7 @@ test('重新提交使用新工作流端点且响应丢失按待确认处理', as
 })
 
 test('完成结果保留原始请求出现时间和序号，供动作接口流转排序', async () => {
-  const trace = seedTrace([{ method: 'POST', url: 'https://t/api/newWorkflowCenter/flowInstance/submit', state: 'fulfilled', body: ok() }])
+  const trace = seedTrace([{ method: 'POST', url: 'https://t/api/web/flowInstanceApi/submit', state: 'fulfilled', body: ok() }])
   const original = trace.list()[0]!
   const result = await settleCompletion({ ...base, action: 'submit', trace })
   assert.equal(result.requestTrace[0]!.seq, original.seq)
@@ -67,7 +66,7 @@ test('完成结果保留原始请求出现时间和序号，供动作接口流�
 })
 
 test('SID 失效判 target_rejected', async () => {
-  const verdict = await settleCompletion({ ...base, action: 'submit', trace: seedTrace([{ method: 'POST', url: 'https://t/api/newWorkflowCenter/flowInstance/submit', state: 'fulfilled', body: encoded({ isSuccess: false, code: 'RESP401', message: '会话无效' }) }]) })
+  const verdict = await settleCompletion({ ...base, action: 'submit', trace: seedTrace([{ method: 'POST', url: 'https://t/api/web/flowInstanceApi/submit', state: 'fulfilled', body: encoded({ isSuccess: false, code: 'RESP401', message: '会话无效' }) }]) })
   assert.equal(verdict.status, 'target_rejected')
   assert.match(String(verdict.message), /SID/)
 })
@@ -245,7 +244,7 @@ test('调用其他写端点但未命中动作期望端点时判 failed', async (
 
 test('期望写响应丢失判 uncertain 且锁死后续写', async () => {
   const writeGate = new WriteGate()
-  const verdict = await settleCompletion({ ...base, action: 'submit', trace: seedTrace([{ method: 'POST', url: 'https://t/api/newWorkflowCenter/flowInstance/submit', state: 'aborted' }]), writeGate })
+  const verdict = await settleCompletion({ ...base, action: 'submit', trace: seedTrace([{ method: 'POST', url: 'https://t/api/web/flowInstanceApi/submit', state: 'aborted' }]), writeGate })
   assert.equal(verdict.status, 'uncertain')
   assert.equal(writeGate.isLocked, true)
 })
@@ -253,7 +252,7 @@ test('期望写响应丢失判 uncertain 且锁死后续写', async () => {
 test('硬超时判 timeout 且锁死后续写', async () => {
   const writeGate = new WriteGate()
   const trace = new RequestTraceRecorder()
-  trace.begin({ method: 'POST', url: 'https://t/api/newWorkflowCenter/flowInstance/submit', headers: {}, action: '' })
+  trace.begin({ method: 'POST', url: 'https://t/api/web/flowInstanceApi/submit', headers: {}, action: '' })
   const verdict = await settleCompletion({ action: 'submit', trace, baselineSeq: 0, hardTimeoutMs: 250, idleWindowMs: 20, writeGate })
   assert.equal(verdict.status, 'timeout')
   assert.equal(writeGate.isLocked, true)

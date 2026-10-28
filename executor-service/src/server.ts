@@ -1416,8 +1416,7 @@ async function main (): Promise<void> {
             // 新实例 ID（发起链）：主实例写响应 data.id 是引擎核验与后续步骤的实例引用来源。
             let newInstanceId = ''
             for (const write of debugWrites) {
-              const isInstanceSubmit = write.url.includes('/web/flowInstanceApi/submit') ||
-                write.url.includes('/newWorkflowCenter/flowInstance/submit')
+              const isInstanceSubmit = write.url.includes('/web/flowInstanceApi/submit')
               if (write.isPermissionCheck || !isInstanceSubmit || !write.responseBody) continue
               try {
                 const parsed = JSON.parse(write.responseBody) as { data?: { id?: unknown } }

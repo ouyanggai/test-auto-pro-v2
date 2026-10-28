@@ -183,7 +183,7 @@ func TestProtocolMatrixRegistry(t *testing.T) {
 	}
 	for _, endpoint := range []string{
 		target.WriteEndpointSubmit, target.WriteEndpointReSubmit, target.WriteEndpointAudit,
-		target.RuntimeSubmitEndpoint, target.RuntimeReSubmitEndpoint, target.RuntimeAuditEndpoint,
+		target.RuntimeReSubmitEndpoint, target.RuntimeAuditEndpoint,
 	} {
 		fields, ok := matrix[endpoint]
 		if !ok {

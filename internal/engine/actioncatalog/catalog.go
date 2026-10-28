@@ -54,7 +54,7 @@ var actionDefinitions = []actionDefinition{
 	{
 		action: model.ActionSubmit, category: model.ActionCategoryLifecycle, scope: model.ActionScopeInitiator,
 		label: "提交", description: "发起端提交新实例，按目标引擎重新解析路径并创建首个待办。已有草稿走重新提交。",
-		targetOperation: target.RuntimeSubmitEndpoint,
+		targetOperation: target.WriteEndpointSubmit,
 		parameters: []model.ActionParameter{
 			{Name: "id", Required: false, Description: "草稿实例键，由服务端绑定"},
 			{Name: "flowProxyId", Required: true, Description: "目标流程代理引用"},

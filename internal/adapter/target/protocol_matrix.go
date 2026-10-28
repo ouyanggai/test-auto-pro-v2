@@ -242,15 +242,14 @@ var endpointFieldMatrix = map[string]map[string]FieldPresence{
 	},
 }
 
-// init 为 runtime 页面三个新工作流正式写端点登记字段矩阵。目标页面仍复用旧提交、
-// 重提和审批的载荷构造函数，只是切换 API 常量；显式复制同源矩阵可保证新端点
-// 不因“未直接构造”而绕过逐字段协议契约。
+// init 为 runtime 页面两个新工作流正式写端点（重提、审批）登记字段矩阵。目标页面仍复用
+// 旧提交载荷构造函数，只是切换 API 常量；显式复制同源矩阵可保证新端点不因“未直接构造”
+// 而绕过逐字段协议契约。正式提交端点已被全过程 test 回退为旧 submit，无需再登记。
 func init() {
 	for _, item := range []struct {
 		endpoint string
 		source   string
 	}{
-		{RuntimeSubmitEndpoint, WriteEndpointSubmit},
 		{RuntimeReSubmitEndpoint, WriteEndpointReSubmit},
 		{RuntimeAuditEndpoint, WriteEndpointAudit},
 	} {

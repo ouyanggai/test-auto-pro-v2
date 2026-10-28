@@ -116,7 +116,7 @@ test('正式提交在转发前恢复工具流程名并保留其它字段', async
       }
     })
     await page.goto(new URL('index.html', originURL).toString(), { waitUntil: 'load' })
-    const response = await page.evaluate(`window.doFetch('${new URL('/newWorkflowCenter/flowInstance/submit', originURL)}', {
+    const response = await page.evaluate(`window.doFetch('${new URL('/web/flowInstanceApi/submit', originURL)}', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ data: { name: '页面流程名', flowProxyId: 'proxy-1' } })
     })`) as { status: number }

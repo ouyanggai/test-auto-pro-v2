@@ -51,7 +51,7 @@ func TestActionCatalogExposesStableGroupsAndTargetParameters(t *testing.T) {
 	if byAction[model.ActionSaveDraft].TargetOperation != "/web/flowInstanceApi/submit" || byAction[model.ActionStorageFormData].TargetOperation != "/web/flowInstanceApi/storageFormData" {
 		t.Fatalf("草稿和审批暂存目标接口不正确：draft=%s storage=%s", byAction[model.ActionSaveDraft].TargetOperation, byAction[model.ActionStorageFormData].TargetOperation)
 	}
-	if byAction[model.ActionSubmit].TargetOperation != target.RuntimeSubmitEndpoint ||
+	if byAction[model.ActionSubmit].TargetOperation != target.WriteEndpointSubmit ||
 		byAction[model.ActionResubmit].TargetOperation != target.RuntimeReSubmitEndpoint ||
 		byAction[model.ActionApprove].TargetOperation != target.RuntimeAuditEndpoint ||
 		byAction[model.ActionReject].TargetOperation != target.RuntimeAuditEndpoint {

@@ -102,7 +102,7 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
       body &&
       toolFlowName &&
       request.method() === 'POST' &&
-      /\/(web\/flowInstanceApi\/submit|newWorkflowCenter\/flowInstance\/submit)$/.test(new URL(request.url()).pathname)
+      /\/web\/flowInstanceApi\/submit$/.test(new URL(request.url()).pathname)
     ) {
       // 工具流程名称保护：只改写主实例 submit 的 data.name，其余字段原样保留。
       try {
