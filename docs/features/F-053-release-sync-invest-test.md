@@ -133,6 +133,10 @@
 
 ### 已执行验证
 
+- 2026-10-28 重提/审批端点全量回退同步：全过程 `test` 前移到 `27f82a62b98d3bc220746f44353d0d092c62a2c6`，api/index.js 删除全部 newWorkflowCenter 写端点（仅剩 `flowProxy/findById`），重提改 `saveFlowInstanceAgain=/web/flowInstanceApi/reSubmit`（预检带 `checkPermissions` 打同端点）、审批改 `qualityManage.submitTask=/flowInstanceApi/audit`。工具侧（`0e80fc8`）回退 completion.ts 期望端点与主写端点集、`isPermissionCheckSubmit` 扩展到 reSubmit 端点、写白名单、协议矩阵 init 删除、动作目录、runtimeexec 动作登记与详情投影、耗时归类；`/newWorkflowCenter/` 路由前缀因只读接口保留。
+- 验证通过：`go build ./...`；`go test ./internal/adapter/target ./test/contracts/executor-service ./test/contracts/form-runtime ./test/contracts/runtimeexec ./test/unit/backend/action_orchestration ./test/unit/backend/target`；`go test ./test/contracts/f035/protocol -run "TestProtocolMatrixRegistry|TestActionBodiesMatchMatrix|TestSubmitBody"`；`pnpm --dir executor-service typecheck`；`node --experimental-strip-types --test test/unit/executor-service/completion.test.ts test/unit/executor-service/target-route.test.ts`（38 项，新增重提预检不冒充正式写用例）。f035 包全量仍有既有 `TestSpecialBusinessLifecycleRegistry` 失败（与前两轮相同，已记录）。
+- 2026-10-28 11:58 发布 `20261028-115816-0d734cab` 成功：服务器 revision `0e80fc8304c569345ea5e665e89f091157c71390`，基座 `546ca9c8`、全过程 `27f82a62b`，映射摘要 `c68390745e56134c6f736488f9d8ea1108235a42a8777daa1a80a428a7ffe85f`，候选摘要 `f4646c51cf5af6a97a3c6d232548fae2cc4fca879684f791a6751d82f15959ad`，覆盖数量 1；执行器 `/health` 与服务器 `last-release.json` 一致。容器内核实：api/index.js 无 flowSubmit/flowReSubmit/flowAudit，EnterpriseExamineOpinion 用 `qualityManage.submitTask`（1 处）、examineOpinion 用 `saveFlowInstanceAgain`（2 处）、合同初始化修复块保留。六服务 healthy，验活通过。未重试旧运行、未发送新的目标业务写。
+
 - 2026-10-28 线上审批失败诊断与修复：`oyg测试11` 运行 1/运行 2 第 2 步审批「没有发出期望写请求 /newWorkflowCenter/flowInstance/flowAudit」。服务器取证：第 1 步提交成功（老端点，回退适配生效）；第 2 步装载合同审批表单期间 `ContractSealReviewBusiness` 实例 1 于 03:16:12 挂载并完成初始化读取（`contractReview/findById` 200），初始化收尾 `setData` 回写引起组件重建，实例 2 于 03:16:15 挂载但 `initFormInstance` 接线（`EnterpriseExamineDialog` 的 `jsonData` 监听器）不再发送，03:16:17 分发落在实例 2 上被「合同当前状态未读取成功，已阻止提交」阻断。修复 `4b1c742`：`contract-seal-review.json` 覆盖的 `contractBusiness` 门禁前增加分发时就地有界初始化（组件从未初始化且无错误时用第一个参数的表单实例补 `initFormInstance`）。
 - `node executor-service/scripts/sync-flow-source.js` 重新生成候选并确认修复块应用；`node --experimental-strip-types --test test/unit/executor-service/flow-source-sync.test.ts` 10 项通过（新增真实候选含就地补初始化断言）；`pnpm --dir executor-service typecheck` 通过。
 - 2026-10-28 11:32 发布 `20261028-113200-f9c22865` 成功：服务器 revision `4b1c7421e3ef1ae73bc8f4762c5a6f97a6600959`，基座 `546ca9c8`、全过程 `8aaaf2a0`，映射摘要 `c68390745e56134c6f736488f9d8ea1108235a42a8777daa1a80a428a7ffe85f`，候选摘要 `ff46c4f3b77d92b536a7c884a4979f518bac95d52cac081812401728914a58fc`，覆盖数量 1；执行器 `/health` 与服务器 `last-release.json` 一致，`docker exec` 确认容器内 `ContractSealReviewBusiness.vue` 含修复块。六服务 healthy，HTTP、Chromium 启动与日志挂载验活通过。未重试旧运行、未发送新的目标业务写。
@@ -184,6 +188,8 @@
 5. 配置侧 live 表单、已有计划与运行事实按发布前后的正常边界核对。原流程编码不一致若重现，保留当次所选实例与计划的编码证据另行排查，不绕过校验。
 
 ## 状态记录
+
+- 2026-10-28 `ready_for_manual`（端点全量回退）：全过程 `test` 相继回退提交（`2e10a724b`）与重提/审批（`27f82a62b`）后，工具侧三类动作期望端点已全部同步回退老端点（`0e80fc8`）并发布 `20261028-115816-0d734cab`；新工作流仅剩 `flowProxy/findById` 只读接口。同日早前已修复合同审批组件重建初始化丢失（`4b1c742`）。等待用户强刷后重新发起路径人工验收提交/审批/重提与节点流转，不自动标记 accepted。
 
 - 2026-10-28 `ready_for_manual`（合同审批初始化修复）：用户真实运行暴露 6cf2e25 合同门禁边界缺陷——初始化回写引起组件重建后接线丢失，审批被「合同当前状态未读取成功」阻断。已改为分发时就地补有界初始化并发布 `20261028-113200-f9c22865`（提交 `4b1c742`）。等待用户强刷后重新发起合同盖章评审路径人工验收第 2 步审批与后续流转，不自动标记 accepted。
 
