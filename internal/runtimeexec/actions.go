@@ -26,11 +26,11 @@ type ActionEntry struct {
 }
 
 // 写端点直接引用 adapter 的唯一常量，避免散落字面量。
-// 正式提交端点已被全过程 test 回退为旧 submit，与 save_draft 同端点、按载荷语义区分。
+// 全过程 test 27f82a62b 已把重提与审批一并回退为旧端点，新工作流写端点登记全部删除。
 var (
 	endpointSubmit          = target.WriteEndpointSubmit
-	endpointRuntimeReSubmit = target.RuntimeReSubmitEndpoint
-	endpointRuntimeAudit    = target.RuntimeAuditEndpoint
+	endpointAudit           = target.WriteEndpointAudit
+	endpointReSubmit        = target.WriteEndpointReSubmit
 	endpointStorageForm     = target.WriteEndpointStorageForm
 	endpointTranspond       = target.WriteEndpointTranspond
 	endpointFlowTracking    = target.WriteEndpointFlowTracking
@@ -61,16 +61,16 @@ var runtimeActionEntries = map[string]ActionEntry{
 	},
 	"approve": {
 		Action: "approve", Host: "approve", EntryMethod: "formMakingFormBusiness(true,'pass')",
-		WriteEndpoints: []string{endpointRuntimeAudit},
+		WriteEndpoints: []string{endpointAudit},
 		ContinueMethod: "handleSaveBranchChooseNode/handleSaveParallelChooseNode/getSelectPerson",
 	},
 	"reject": {
 		Action: "reject", Host: "approve", EntryMethod: "formMakingFormBusiness(null,'no_pass')",
-		WriteEndpoints: []string{endpointRuntimeAudit},
+		WriteEndpoints: []string{endpointAudit},
 	},
 	"resubmit": {
 		Action: "resubmit", Host: "approve", EntryMethod: "reSubmitFormMakingFormBusiness(true)（isReInitiate）",
-		WriteEndpoints: []string{endpointRuntimeReSubmit},
+		WriteEndpoints: []string{endpointReSubmit},
 		ContinueMethod: "handleSaveBranchChooseNode/handleSaveParallelChooseNode/getSelectPerson",
 	},
 	"forward": {

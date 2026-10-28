@@ -37,15 +37,10 @@ const (
 	RelationFileDeleteEndpoint = "/web/file/api/relationFile/deleteByRelationIdAndFileIds"
 )
 
-// RuntimeSubmitEndpoint 已被全过程 test（提交 2e10a724b）回退删除：页面正式提交与
-// 保存草稿重新共用 WriteEndpointSubmit，靠 data.checkPermissions（权限预检）与
-// data.status（draft/run）区分语义，不再保留新提交端点登记。
-
-// RuntimeReSubmitEndpoint 是页面重新发起流程的新工作流端点。
-const RuntimeReSubmitEndpoint = "/newWorkflowCenter/flowInstance/reSubmit"
-
-// RuntimeAuditEndpoint 是页面审批流程的新工作流端点。
-const RuntimeAuditEndpoint = "/newWorkflowCenter/flowInstance/flowAudit"
+// 新工作流三个写端点已被全过程 test 全部回退删除（提交 2e10a724b 回退 submit、27f82a62b 回退
+// 重提与审批，仅剩 flowProxy/findById 只读接口）：页面正式提交、重提、审批重新共用
+// WriteEndpointSubmit / WriteEndpointReSubmit / WriteEndpointAudit，靠 data.checkPermissions
+// （权限预检，submit 与 reSubmit 端点都会出现）与载荷语义区分，不再保留新端点登记。
 
 // ActionWriteRequest 是动作写请求的统一意图：执行器按动作填充，适配层负责协议。
 type ActionWriteRequest struct {

@@ -70,7 +70,7 @@ func TestTargetPathPrefixesMirror(t *testing.T) {
 	if !runtimeexec.IsTargetPath("/flowInstanceApi/audit") {
 		t.Fatalf("/flowInstanceApi 前缀必须命中")
 	}
-	if !runtimeexec.IsTargetPath("/newWorkflowCenter/flowInstance/reSubmit") {
+	if !runtimeexec.IsTargetPath("/newWorkflowCenter/flowProxy/findById") {
 		t.Fatalf("新工作流前缀必须命中")
 	}
 	if runtimeexec.IsTargetPath("/static/app.js") {

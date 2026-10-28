@@ -52,9 +52,9 @@ func TestActionCatalogExposesStableGroupsAndTargetParameters(t *testing.T) {
 		t.Fatalf("草稿和审批暂存目标接口不正确：draft=%s storage=%s", byAction[model.ActionSaveDraft].TargetOperation, byAction[model.ActionStorageFormData].TargetOperation)
 	}
 	if byAction[model.ActionSubmit].TargetOperation != target.WriteEndpointSubmit ||
-		byAction[model.ActionResubmit].TargetOperation != target.RuntimeReSubmitEndpoint ||
-		byAction[model.ActionApprove].TargetOperation != target.RuntimeAuditEndpoint ||
-		byAction[model.ActionReject].TargetOperation != target.RuntimeAuditEndpoint {
+		byAction[model.ActionResubmit].TargetOperation != target.WriteEndpointReSubmit ||
+		byAction[model.ActionApprove].TargetOperation != target.WriteEndpointAudit ||
+		byAction[model.ActionReject].TargetOperation != target.WriteEndpointAudit {
 		t.Fatalf("正式流程动作目标接口不正确：submit=%s resubmit=%s approve=%s reject=%s",
 			byAction[model.ActionSubmit].TargetOperation, byAction[model.ActionResubmit].TargetOperation,
 			byAction[model.ActionApprove].TargetOperation, byAction[model.ActionReject].TargetOperation)

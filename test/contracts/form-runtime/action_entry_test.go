@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/runtimeexec"
 )
 
@@ -34,9 +33,9 @@ func TestForwardIsTheOnlyCompositeAction(t *testing.T) {
 		"save_draft":        "/web/flowInstanceApi/submit",
 		"submit":            "/web/flowInstanceApi/submit",
 		"storage_form_data": "/web/flowInstanceApi/storageFormData",
-		"approve":           target.RuntimeAuditEndpoint,
-		"reject":            target.RuntimeAuditEndpoint,
-		"resubmit":          target.RuntimeReSubmitEndpoint,
+		"approve":           "/flowInstanceApi/audit",
+		"reject":            "/flowInstanceApi/audit",
+		"resubmit":          "/web/flowInstanceApi/reSubmit",
 	}
 	for _, action := range runtimeexec.RuntimeActionNames() {
 		entry, err := runtimeexec.EntryOf(action)

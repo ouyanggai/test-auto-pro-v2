@@ -45,9 +45,8 @@ func TestForwardRuntimeRequestStripsDuplicatedGatewayPrefix(t *testing.T) {
 		{"无前缀读路径", "/web/formProxy/findById", "/api/web/formProxy/findById"},
 		// 烘焙绝对网关实例发出的带 /api 前缀路径：重复前缀必须剥掉。
 		{"带前缀写路径", "/api/web/flowInstanceApi/submit", "/api/web/flowInstanceApi/submit"},
-		// 新工作流重提/审批可能以无 /api 前缀的页面相对路径到达 Go 出口
-		// （正式提交端点已被全过程 test 回退为旧 submit）。
-		{"新工作流写路径", target.RuntimeReSubmitEndpoint, "/api" + target.RuntimeReSubmitEndpoint},
+		// 新工作流前缀只剩抄送流程详情只读接口（写端点已全部回退），仍需按页面相对路径路由。
+		{"新工作流读路径", "/newWorkflowCenter/flowProxy/findById", "/api/newWorkflowCenter/flowProxy/findById"},
 		// 真实以 /api 开头的目标路径：剥掉再拼回，落点不变。
 		{"真实 api 开头路径", "/api/type/list", "/api/type/list"},
 	}
@@ -138,11 +137,10 @@ func cloneValues(src url.Values) url.Values {
 	return dst
 }
 
-// TestRuntimeFlowEndpointsAreKnownWrites 锁定正式提交/重提/审批端点的写出纪律：
+// TestRuntimeFlowEndpointsAreKnownWrites 锁定提交/重提/审批三个回退后旧端点的写出纪律：
 // 页面请求无论是否带网关 /api 前缀，都必须被归类为已登记写请求，断线时不得误判零写入。
-// 提交端点已被全过程 test 回退为旧 submit，新工作流仅剩重提与审批。
 func TestRuntimeFlowEndpointsAreKnownWrites(t *testing.T) {
-	for _, endpoint := range []string{target.WriteEndpointSubmit, target.RuntimeReSubmitEndpoint, target.RuntimeAuditEndpoint} {
+	for _, endpoint := range []string{target.WriteEndpointSubmit, target.WriteEndpointReSubmit, target.WriteEndpointAudit} {
 		if !target.IsKnownWriteRequestPath(endpoint) || !target.IsKnownWriteRequestPath("/api"+endpoint) {
 			t.Fatalf("新工作流端点未登记为写请求：%s", endpoint)
 		}

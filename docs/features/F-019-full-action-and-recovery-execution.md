@@ -37,9 +37,9 @@
 
 ## 写端点白名单
 
-2026-10-28 起当前动作目录已跟随全过程 `test@8aaaf2a0` 回退后的页面契约（正式提交与草稿同用旧 submit）；本节允许的目标写端点为动作目录当前声明的端点：
+2026-10-28 起当前动作目录已跟随全过程 `test@27f82a62b` 全量回退后的页面契约（提交、重提、审批全部回到旧端点，新工作流仅剩 `flowProxy/findById` 只读接口）；本节允许的目标写端点为动作目录当前声明的端点：
 
-`/web/flowInstanceApi/submit`（保存草稿与正式提交）、`/newWorkflowCenter/flowInstance/reSubmit`、`/newWorkflowCenter/flowInstance/flowAudit`、`/web/flowInstanceApi/storageFormData`、`/web/flowInstanceApi/approverAppend`、`/web/flowInstanceApi/updateFlowProxy`、`/web/flowInstanceApi/rollBackThePreviousLevel`、`/web/flowInstanceApi/retrieveProcess`、`/web/flowInstanceApi/revocation`、`/web/urgeHandleRecord/sendUrgeMessage`、`/web/flowInstanceApi/transpond`、`/web/flowInstanceApi/flowTracking`。
+`/web/flowInstanceApi/submit`（保存草稿与正式提交）、`/web/flowInstanceApi/reSubmit`、`/flowInstanceApi/audit`（无 /web 前缀）、`/web/flowInstanceApi/storageFormData`、`/web/flowInstanceApi/approverAppend`、`/web/flowInstanceApi/updateFlowProxy`、`/web/flowInstanceApi/rollBackThePreviousLevel`、`/web/flowInstanceApi/retrieveProcess`、`/web/flowInstanceApi/revocation`、`/web/urgeHandleRecord/sendUrgeMessage`、`/web/flowInstanceApi/transpond`、`/web/flowInstanceApi/flowTracking`。
 
 契约只允许实际请求集合成为上述集合的子集；读请求仍可调用 F-016 已允许的只读端点。每次尝试最多一次写请求，任何第二次写都必须是 F-018 允许的全新重放尝试。
 

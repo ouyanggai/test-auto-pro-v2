@@ -68,7 +68,7 @@ var actionDefinitions = []actionDefinition{
 	{
 		action: model.ActionResubmit, category: model.ActionCategoryLifecycle, scope: model.ActionScopeInitiator,
 		label: "重新提交", description: "发起人从目标允许的草稿、驳回或撤回状态重新发起。",
-		targetOperation: target.RuntimeReSubmitEndpoint,
+		targetOperation: target.WriteEndpointReSubmit,
 		parameters: []model.ActionParameter{
 			{Name: "id", Required: true, Description: "目标已有实例键，由服务端绑定"},
 			{Name: "formDataMongoVo.data", Required: true, Description: "form-runtime 捕获的目标原始表单数据"},
@@ -123,7 +123,7 @@ var actionDefinitions = []actionDefinition{
 	{
 		action: model.ActionApprove, category: model.ActionCategoryCurrentTodo, scope: model.ActionScopeTask,
 		label: "同意", description: "处理当前活动人工待办并按目标引擎推进下一节点或结束实例。",
-		targetOperation: target.RuntimeAuditEndpoint,
+		targetOperation: target.WriteEndpointAudit,
 		parameters: []model.ActionParameter{
 			{Name: "id", Required: true, Description: "目标流程实例键"},
 			{Name: "jobTaskId", Required: true, Description: "当前待办键，由服务端绑定"},
@@ -139,7 +139,7 @@ var actionDefinitions = []actionDefinition{
 	{
 		action: model.ActionReject, category: model.ActionCategoryCurrentTodo, scope: model.ActionScopeTask,
 		label: "不同意", description: "处理当前活动人工待办并按目标规则把实例退回发起人。",
-		targetOperation: target.RuntimeAuditEndpoint,
+		targetOperation: target.WriteEndpointAudit,
 		parameters: []model.ActionParameter{
 			{Name: "id", Required: true, Description: "目标流程实例键"},
 			{Name: "jobTaskId", Required: true, Description: "当前待办键，由服务端绑定"},

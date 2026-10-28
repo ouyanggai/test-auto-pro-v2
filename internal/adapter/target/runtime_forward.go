@@ -175,8 +175,6 @@ func (c *Client) ForwardRuntimeRequest(ctx context.Context, session Session, req
 // 连接断开必须按「可能已写出」处理（结果待确认），绝不允许自动重发。
 var writeEndpointSet = map[string]bool{
 	WriteEndpointSubmit:               true,
-	RuntimeReSubmitEndpoint:           true,
-	RuntimeAuditEndpoint:              true,
 	WriteEndpointAudit:                true,
 	WriteEndpointReSubmit:             true,
 	WriteEndpointStorageForm:          true,

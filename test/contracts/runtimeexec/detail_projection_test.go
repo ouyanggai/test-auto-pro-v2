@@ -100,13 +100,13 @@ func TestDetailProjectionKeepsSequenceAndReadWriteClass(t *testing.T) {
 	}
 }
 
-// TestNewWorkflowReSubmitIsFlowWrite 新工作流重提必须进入“流程动作”阶段并按写请求分类；
-// 提交端点已被全过程 test 回退为旧 submit，新工作流仅剩重提与审批两个端点。
-func TestNewWorkflowReSubmitIsFlowWrite(t *testing.T) {
-	trace := json.RawMessage(`[{"seq":1,"method":"POST","url":"https://t/api` + target.RuntimeReSubmitEndpoint + `","state":"fulfilled","httpStatus":200}]`)
+// TestReSubmitIsFlowWrite 重提（回退后老 reSubmit 端点）必须进入“流程动作”阶段并按写请求分类；
+// 新工作流写端点已被全过程 test 27f82a62b 全部删除，仅剩 flowProxy/findById 只读接口。
+func TestReSubmitIsFlowWrite(t *testing.T) {
+	trace := json.RawMessage(`[{"seq":1,"method":"POST","url":"https://t/api` + target.WriteEndpointReSubmit + `","state":"fulfilled","httpStatus":200}]`)
 	detail := runtimeexec.BuildDetailProjection(runtimeexec.ActionRunResult{Status: "success"}, trace, "v2")
 	if detail.Stages[1].Requests != 1 || detail.Requests[0].RequestClass != "write" {
-		t.Fatalf("新工作流重提阶段或请求分类错误：%+v", detail)
+		t.Fatalf("重提阶段或请求分类错误：%+v", detail)
 	}
 }
 

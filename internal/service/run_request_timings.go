@@ -238,8 +238,6 @@ var writeEndpointWhitelist = []string{
 	"flowInstanceApi/updateFlowProxy",
 	"flowInstanceApi/storageFormData",
 	"flowInstanceApi/reSubmit",
-	target.RuntimeReSubmitEndpoint,
-	target.RuntimeAuditEndpoint,
 	"flowInstancePostscript/save",
 	target.ContractReviewIncreaseEndpoint,
 	target.ContractReviewModifyEndpoint,

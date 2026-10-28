@@ -8,15 +8,14 @@ import { RequestTraceRecorder, type TraceEntry } from './request-trace.ts'
 import { CHOICE_ERRORS } from './native-actions.ts'
 
 // FLOW_WRITE_PATHS 是流程主写端点：它们的成败决定主实例是否推进（转发的辅助实例创建同属主写）。
-// 端点真名来自 flow-source/src/api/index.js（全过程 test 8aaaf2a 回退后的事实）：
-//   提交与保存草稿都用 saveFlowInstance=/web/flowInstanceApi/submit；
-//   重提/审批用 newWorkflowCenter 的两个端点；
-//   transpondFlow=/web/flowInstanceApi/transpond、storageFormData=/web/flowInstanceApi/storageFormData。
-// 曾被登记的 newWorkflowCenter/flowInstance/submit 已被目标源码回退删除，不再保留。
+// 端点真名来自 flow-source/src/api/index.js（全过程 test 27f82a62 全部回退后的事实）：
+//   提交与保存草稿用 saveFlowInstance=/web/flowInstanceApi/submit；
+//   重提用 saveFlowInstanceAgain=/web/flowInstanceApi/reSubmit；
+//   审批用 qualityManage.submitTask=/flowInstanceApi/audit（无 /web 前缀）；
+//   transpond=/web/flowInstanceApi/transpond、storageFormData=/web/flowInstanceApi/storageFormData。
+// newWorkflowCenter 三个写端点已被目标源码全部删除，仅剩 flowProxy/findById 只读接口，不再登记。
 export const FLOW_WRITE_PATHS = [
   '/web/flowInstanceApi/submit',
-  '/newWorkflowCenter/flowInstance/reSubmit',
-  '/newWorkflowCenter/flowInstance/flowAudit',
   '/flowInstanceApi/audit',
   '/web/flowInstanceApi/transpond',
   '/web/flowInstanceApi/storageFormData',
@@ -27,9 +26,9 @@ const ACTION_WRITE_PATH: Record<string, string> = {
   save_draft: '/web/flowInstanceApi/submit',
   submit: '/web/flowInstanceApi/submit',
   storage_form_data: '/web/flowInstanceApi/storageFormData',
-  approve: '/newWorkflowCenter/flowInstance/flowAudit',
-  reject: '/newWorkflowCenter/flowInstance/flowAudit',
-  resubmit: '/newWorkflowCenter/flowInstance/reSubmit',
+  approve: '/flowInstanceApi/audit',
+  reject: '/flowInstanceApi/audit',
+  resubmit: '/web/flowInstanceApi/reSubmit',
   forward: '/web/flowInstanceApi/transpond'
 }
 
@@ -225,15 +224,15 @@ export function detectFlowRejection (entry: FlowRejectionInput): string | null {
   return null
 }
 
-// isPermissionCheckSubmit 识别权限校验型 POST /web/flowInstanceApi/submit：
-// 重提链的 checkFlowPermission（EnterpriseExamineOpinion checkFlowPermission，data.checkPermissions='first'）
-// 与 FlowDialog 打开时的前置校验都走 submit 端点，但它们不是流程写；只看 URL+方法会把
-// 「权限校验」误判成「流程已写」（施工令 §3 附加项）。判定必须精确到 data 顶层的
+// isPermissionCheckSubmit 识别权限校验型 POST（/web/flowInstanceApi/submit 与回退后的 reSubmit）：
+// 重提链的 checkFlowPermission（EnterpriseExamineOpinion/examineOpinion，data.checkPermissions='first'，
+// 全过程 test 27f82a62 起预检也随重提一起打回老 reSubmit 端点）与 FlowDialog 打开时的前置校验
+// 都不是流程写；只看 URL+方法会把「权限校验」误判成「流程已写」。判定必须精确到 data 顶层的
 // checkPermissions 键：FormMaking 表单正文（formDataMongoVo）可能携带含同名子串的
 // 历史数据值（2026-09-19 夜间调休单实测），裸子串匹配会把真实草稿写误判成权限探测，
 // 导致「零写失败」误判而目标上实际已创建草稿实例。
 export function isPermissionCheckSubmit (entry: { url: string, body?: string, bodyEncoding?: string }): boolean {
-  if (!entry.url.includes('/web/flowInstanceApi/submit')) return false
+  if (!entry.url.includes('/web/flowInstanceApi/submit') && !entry.url.includes('/web/flowInstanceApi/reSubmit')) return false
   let text = entry.body ?? ''
   if (entry.bodyEncoding === 'base64') text = Buffer.from(text, 'base64').toString('utf8')
   if (text.trim() === '') return false

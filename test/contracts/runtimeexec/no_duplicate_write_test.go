@@ -90,8 +90,6 @@ func TestMatrixCoversAllWriteEndpoints(t *testing.T) {
 	matrix := target.ProtocolMatrix()
 	required := append([]string{
 		target.WriteEndpointSubmit,
-		target.RuntimeReSubmitEndpoint,
-		target.RuntimeAuditEndpoint,
 		target.WriteEndpointAudit,
 		target.WriteEndpointReSubmit,
 		target.WriteEndpointStorageForm,

@@ -158,10 +158,11 @@ deployment=未取得（目标平台不提供版本接口）
 
 ### 1.1 路由族与门禁
 
-2026-10-28 起执行器页面跟随全过程 `test@8aaaf2a0`（提交 `2e10a724b`）的当前契约：保存草稿与正式提交
-都走旧 `saveFlowInstance=/web/flowInstanceApi/submit`，靠 `data.checkPermissions`（权限预检）与
-`data.status`（draft/run）区分语义；重新提交和审批仍走 `newWorkflowCenter` 两个端点。曾被短暂启用的
-`flowSubmit` 新提交端点已被目标源码回退删除，不再作为 runtime 正式动作的期望写端点。
+2026-10-28 起执行器页面跟随全过程 `test@27f82a62` 的当前契约：新工作流三个写端点已被目标源码全部
+回退删除（`2e10a724b` 回退提交、`27f82a62b` 回退重提与审批，仅剩 `flowProxy/findById` 抄送只读接口）。
+保存草稿与正式提交共用 `saveFlowInstance=/web/flowInstanceApi/submit`（`data.checkPermissions` 权限预检
+与 `data.status` draft/run 区分语义）；重新提交用 `saveFlowInstanceAgain=/web/flowInstanceApi/reSubmit`
+（重提链预检也带 `checkPermissions` 打同端点）；审批用 `qualityManage.submitTask=/flowInstanceApi/audit`。
 
 本工具动作目录共 15 条动作、13 个当前不同写端点（`internal/engine/actioncatalog/catalog.go`）。它们分属多条路由族，失败形状必须按当次端点重新核对。
 
@@ -169,12 +170,12 @@ deployment=未取得（目标平台不提供版本接口）
 | --- | --- | --- | --- | --- | --- |
 | 保存草稿 | `save_draft` | `/web/flowInstanceApi/submit` | web | 无 | **有** |
 | 提交 | `submit` | `/web/flowInstanceApi/submit` | web | 无 | **有** |
-| 重新提交 | `resubmit` | `/newWorkflowCenter/flowInstance/reSubmit` | 新工作流 | 待重新勘定 | 待重新勘定 |
+| 重新提交 | `resubmit` | `/web/flowInstanceApi/reSubmit` | web | 无 | 无 |
 | 暂存当前表单 | `storage_form_data` | `/web/flowInstanceApi/storageFormData` | web | 无 | 无 |
 | 加签 | `add_sign` | `/web/flowInstanceApi/updateFlowProxy` | web | 无 | 无 |
 | 移交 | `transfer` | `/web/flowInstanceApi/approverAppend` | web | 无 | 无 |
-| 同意 | `approve` | `/newWorkflowCenter/flowInstance/flowAudit` | 新工作流 | 待重新勘定 | 待重新勘定 |
-| 不同意 | `reject` | `/newWorkflowCenter/flowInstance/flowAudit` | 新工作流 | 待重新勘定 | 待重新勘定 |
+| 同意 | `approve` | `/flowInstanceApi/audit` | 中心 api | 无 | 无 |
+| 不同意 | `reject` | `/flowInstanceApi/audit` | 中心 api | 无 | 无 |
 | 回退上一节点 | `rollback_previous` | `/web/flowInstanceApi/rollBackThePreviousLevel` | web | **有** | 无 |
 | 取回 | `retrieve` | `/web/flowInstanceApi/retrieveProcess` | web | **有** | 无 |
 | 撤回 | `withdraw` | `/web/flowInstanceApi/revocation` | web | **有** | 无 |
@@ -203,22 +204,23 @@ head=java-serve/rsh-cloud-workflow-center-api@088aed79ad0b
 deployment=未取得（目标平台不提供版本接口）
 ```
 
-当前 runtime 两个新工作流端点（重提、审批）的页面来源；正式提交端点已回退为旧 submit：
+当前 runtime 写端点已全部回退为旧端点的页面来源（全过程 `test@27f82a62b`，api/index.js 删除全部
+newWorkflowCenter 写定义；重提改 `saveFlowInstanceAgain`、审批改 `qualityManage.submitTask`）：
 
 ```evidence
-file=全过程 test 8aaaf2a0 src/views/GroupApproveManage/Submitted/components/FlowDialog.vue
-line=912
-contains=this.clickMethod == 'draft' ? Api.schedule.saveFlowInstance : Api.schedule.saveFlowInstance
+file=全过程 test 27f82a62b src/api/index.js
+line=495
+contains=submitTask: '/flowInstanceApi/audit'
 strength=源码可证明
-head=全过程 test@8aaaf2a0165cd676357fd89010fb000351a700dc（回退提交 2e10a724b）
+head=全过程 test@27f82a62b98d3bc220746f44353d0d092c62a2c6（回退提交 2e10a724b + 回退重提/审批 27f82a62b）
 deployment=待本次发布核对
 ```
 
 必须写清的三件事：
 
-1. 旧 `/flowInstanceApi/audit` 的“无 `@FlowSubmitVerify`”结论只属于旧端点，不能迁移到当前 `/newWorkflowCenter/flowInstance/flowAudit`。
-2. `/web/flowInstanceApi/v1` 是另一个控制器，带自己的 `@Consistency`；当前工具不调用 v1 路径。
-3. 已证实的 `@Consistency` 仍只在旧 `/web/flowInstanceApi/submit` 上；新 submit 的后端注解未重新勘定前按待核对处理，不能把注解结论跨端点迁移。
+1. **同意与不同意不经过 `@FlowSubmitVerify`。** 工具用的是无 `/web` 前缀的 `/flowInstanceApi/audit`（回退后 `qualityManage.submitTask` 即该路径），该控制器方法只有 `@ParaCheck({})`。`/web/flowInstanceApi/audit` 确实带 `@FlowSubmitVerify(submitType = audit)`，但那是另一个端点，工具不调用它。
+2. **`/web/flowInstanceApi/v1` 是另一个控制器**（`FlowInstanceWebControllerV1`，`@RequestMapping("/web/flowInstanceApi/v1")`），带自己的 `@Consistency`。工具不调用 v1 路径，勘定时不要把两个控制器的注解混读。
+3. **只有 submit 带 `@Consistency`**，且 `deleteMethodName = "delete"`。批次号的携带规则见第 2.2 节 F-035 逐接口矩阵。
 
 ```evidence
 file=参考代码/java-serve/rsh-cloud-web-api/src/main/java/com/rsh/cloud/web/api/controller/ops/flow/FlowInstanceWebController.java
@@ -543,11 +545,9 @@ deployment=未取得（目标平台不提供版本接口）
 
 | 端点 | `batchCode` | 证据 |
 | --- | --- | --- |
-| `/web/flowInstanceApi/submit`（当前保存草稿与正式提交；历史权限预检） | `required`（顶层） | FlowDialog.enterpriseHandleSubmit `param.batchCode = this.batchCode`（:875），弹窗 data 初始化 `batchCode: generateRandomId(32)`（:261）；人工成功 curl 运行 7 同计划 |
-| `/web/flowInstanceApi/reSubmit`（历史正式重提） | `forbidden` | examineOpinion 重提页面不生成、不发送批次号 |
-| `/newWorkflowCenter/flowInstance/reSubmit`（当前正式重提） | `forbidden` | 目标页面复用原重提载荷构造，无批次号 |
-| `/flowInstanceApi/audit`（历史审批） | `forbidden` | examineOpinion.handleSubmitCheck 无批次号 |
-| `/newWorkflowCenter/flowInstance/flowAudit`（当前审批） | `forbidden` | 目标页面复用原审批载荷构造，无批次号 |
+| `/web/flowInstanceApi/submit`（当前保存草稿与正式提交；含权限预检） | `required`（顶层） | FlowDialog.enterpriseHandleSubmit `param.batchCode = this.batchCode`（:875），弹窗 data 初始化 `batchCode: generateRandomId(32)`（:261）；人工成功 curl 运行 7 同计划 |
+| `/web/flowInstanceApi/reSubmit`（当前正式重提，含 `checkPermissions` 预检） | `forbidden` | examineOpinion 重提页面不生成、不发送批次号 |
+| `/flowInstanceApi/audit`（当前审批） | `forbidden` | examineOpinion.handleSubmitCheck 无批次号 |
 | 其余动作端点（暂存、回退、取回、撤回、移交、加签、转发、关注、催办） | `forbidden`（未登记前禁止进入实现） | 各自页面构造无批次号；新增证据必须先登记矩阵 |
 
 `@Consistency` 的批次补偿风险重新表述：工具按目标页面同形状携带 `batchCode` 时，`submit` 失败可能触发目标自身的删除回滚——这是目标平台自身行为，不是工具可选择的；工具侧防护是「一次写 + 写后对账」，不因补偿风险回退到与目标页面不一致的请求形状。
@@ -782,10 +782,11 @@ deployment=2026-09-05 真实提交实测（计划 11 路径 1121，运行 6 拒�
 `手动条件分支,请选择`，实例仍停在发起人待办。该事实证明路径解析已保存选择，缺陷在运行时跨空/导航节点绑定，
 并且工具当前将清单外拒绝落成 `uncertain`，需要 F-034 修正为发送前阻塞/目标确定拒绝。
 
-### 15.2 新工作流审批接口的选择错误包络
+### 15.2 审批接口的选择错误包络
 
-2026-10-27 线上运行 7 / 路径运行 18 第 11 步调用
-`/newWorkflowCenter/flowInstance/flowAudit`，HTTP 200 响应正文含
+2026-10-27 线上运行 7 / 路径运行 18 第 11 步调用当时的审批端点
+（`/newWorkflowCenter/flowInstance/flowAudit`，全过程 `test@27f82a62b` 已回退为
+`/flowInstanceApi/audit`，包络形状沿用），HTTP 200 响应正文含
 `data.errorType=custom_choose`、消息“手动条件分支，请选择”及
 `throwCustomBranchNotFindError`，但没有 `isSuccess` 字段。该响应是目标明确要求分支选择，
 不是审批成功；本次请求的 `nextAuditorList` 为空，故目标未按已选入口完成分派。
