@@ -215,6 +215,8 @@ test('真实候选包含最新业务文件、适配层和受控 FormMaking 产�
   assert.equal(fs.existsSync(path.join(candidateRoot, 'src/views/FlowInitiate.vue')), true)
   assert.equal(metadata.localOverrideCount, 1)
   assert.equal(fs.readFileSync(path.join(candidateRoot, 'src/components/Custom/components/Business/ContractSealReviewBusiness.vue'), 'utf8').includes('getContractAmountFields'), true)
+  // 组件重建后 jsonData 接线不重发；门禁前必须能用分发参数就地表单实例补一次有界初始化。
+  assert.equal(fs.readFileSync(path.join(candidateRoot, 'src/components/Custom/components/Business/ContractSealReviewBusiness.vue'), 'utf8').includes('仍未初始化就就地补一次有界初始化'), true)
   assert.equal(fs.readFileSync(path.join(candidateRoot, 'src/views/GroupApproveManage/Submitted/components/FlowDialog.vue'), 'utf8').includes('getContractRmbAmount'), true)
 })
 
