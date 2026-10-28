@@ -76,6 +76,9 @@ function readManifest () {
     }
   }
   if (!manifest.mappingVersion) throw new Error('来源清单缺少 mappingVersion')
+  if (manifest.localOverrides !== undefined && !Array.isArray(manifest.localOverrides)) {
+    throw new Error('来源清单 localOverrides 必须是数组')
+  }
   return manifest
 }
 
@@ -287,6 +290,77 @@ function applyBusinessMappings (businessRoot, candidateRoot, manifest, selected)
   }
 }
 
+// resolveServiceRelativePath 只允许读取本项目 serviceRoot 下的受控覆盖文件。
+function resolveServiceRelativePath (relative, label) {
+  const safe = assertSafeRelativePath(relative, label)
+  const resolved = path.resolve(serviceRoot, safe)
+  const rootPrefix = `${path.resolve(serviceRoot)}${path.sep}`
+  if (!resolved.startsWith(rootPrefix)) throw new Error(`${label}越出执行器目录：${relative}`)
+  return resolved
+}
+
+// readLocalOverride 读取严格的文本替换覆盖定义，拒绝目录、符号链接和空操作。
+function readLocalOverride (definition) {
+  if (!definition || typeof definition !== 'object') throw new Error('localOverrides 含有非法覆盖定义')
+  const relative = definition.file
+  const filePath = resolveServiceRelativePath(relative, '业务覆盖文件')
+  const stat = fs.lstatSync(filePath)
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`业务覆盖文件不是普通文件：${relative}`)
+  const override = readJson(filePath, `业务覆盖文件 ${relative}`)
+  if (override.schemaVersion !== 1 || !override.target || !Array.isArray(override.operations) || override.operations.length === 0) {
+    throw new Error(`业务覆盖文件格式非法：${relative}`)
+  }
+  for (const operation of override.operations) {
+    if (!operation || typeof operation.find !== 'string' || operation.find.length === 0 ||
+        typeof operation.replace !== 'string' || operation.count !== 1) {
+      throw new Error(`业务覆盖操作必须包含唯一 find/replace/count=1：${relative}`)
+    }
+  }
+  return { relative, filePath, override }
+}
+
+// resolveOverrideOperation 允许覆盖定义使用 LF，而来源文件使用 CRLF，同时保持唯一匹配门禁。
+function resolveOverrideOperation (source, operation, relative, targetRelative, index) {
+  const candidates = [{ find: operation.find, replace: operation.replace }]
+  if (operation.find.includes('\n') && !operation.find.includes('\r\n')) {
+    candidates.push({
+      find: operation.find.replace(/\n/g, '\r\n'),
+      replace: operation.replace.replace(/\n/g, '\r\n')
+    })
+  }
+  for (const candidate of candidates) {
+    const matches = source.split(candidate.find).length - 1
+    if (matches === operation.count) return candidate
+    if (matches > 0) {
+      throw new Error(`业务覆盖上下文不匹配：${relative} 第 ${index + 1} 个操作在 ${targetRelative} 命中 ${matches} 次，期望 ${operation.count} 次`)
+    }
+  }
+  throw new Error(`业务覆盖上下文不匹配：${relative} 第 ${index + 1} 个操作在 ${targetRelative} 命中 0 次，期望 ${operation.count} 次`)
+}
+
+// applyLocalOverrides 只在映射完成后对候选做上下文唯一替换；任一上下文漂移都拒绝发布。
+function applyLocalOverrides (candidateRoot, manifest) {
+  const applied = []
+  for (const definition of manifest.localOverrides || []) {
+    const { relative, filePath, override } = readLocalOverride(definition)
+    const targetRelative = assertSafeRelativePath(override.target, '业务覆盖目标')
+    const targetPath = path.join(candidateRoot, targetRelative)
+    if (!fs.existsSync(targetPath)) throw new Error(`业务覆盖目标不存在：${targetRelative}`)
+    if (isExcluded(targetRelative, manifest.protected)) {
+      throw new Error(`业务覆盖不能修改执行器保护路径：${targetRelative}`)
+    }
+    let source = fs.readFileSync(targetPath, 'utf8')
+    for (const [index, operation] of override.operations.entries()) {
+      const resolved = resolveOverrideOperation(source, operation, relative, targetRelative, index)
+      source = source.replace(resolved.find, resolved.replace)
+    }
+    fs.writeFileSync(targetPath, source)
+    applied.push({ file: relative, target: targetRelative, operations: override.operations.length })
+    void filePath
+  }
+  return applied
+}
+
 // removeEmptyDirectories 清掉来源映射删除后留下的空目录，不影响候选之外的文件。
 function removeEmptyDirectories (root) {
   const visit = directory => {
@@ -313,12 +387,21 @@ function stageFormMaking (candidateRoot) {
   }
 }
 
-// mappingHash 固定映射版本、排除项和保护边界，避免仅凭业务 SHA 掩盖清单变更。
+// mappingHash 固定映射、保护边界和覆盖文件内容，覆盖变化必须让候选与构建缓存失效。
 function mappingHash (manifest) {
+  const overrides = (manifest.localOverrides || []).map(definition => {
+    const { relative, filePath, override } = readLocalOverride(definition)
+    return {
+      file: relative,
+      content: fs.readFileSync(filePath, 'utf8'),
+      definition: override
+    }
+  })
   return crypto.createHash('sha256').update(canonicalJson({
     mappingVersion: manifest.mappingVersion,
     mappings: manifest.mappings,
-    protected: manifest.protected
+    protected: manifest.protected,
+    localOverrides: overrides
   })).digest('hex')
 }
 
@@ -358,11 +441,40 @@ export function verifyPreparedSource () {
   }
   const formMaking = path.join(targetRoot, 'src', 'lib', 'vue-form-making', 'dist', 'FormMaking.common.js')
   if (!fs.existsSync(formMaking)) throw new Error('合成候选缺少 FormMaking.common.js')
+  const appliedOverrides = applyLocalOverridesForVerification(targetRoot, manifest)
+  if (appliedOverrides.length !== Number(metadata.localOverrideCount || 0)) {
+    throw new Error(`合成源码覆盖数量不一致：元数据 ${metadata.localOverrideCount || 0}，清单 ${appliedOverrides.length}`)
+  }
   return { manifest, metadata, candidateDigest: actualDigest }
 }
 
+// applyLocalOverridesForVerification 校验覆盖定义与候选最终字节一致，不重复写入候选。
+function applyLocalOverridesForVerification (candidateRoot, manifest) {
+  const applied = []
+  for (const definition of manifest.localOverrides || []) {
+    const { relative, override } = readLocalOverride(definition)
+    const targetRelative = assertSafeRelativePath(override.target, '业务覆盖目标')
+    const targetPath = path.join(candidateRoot, targetRelative)
+    if (!fs.existsSync(targetPath)) throw new Error(`业务覆盖目标不存在：${targetRelative}`)
+    for (const operation of override.operations) {
+      const source = fs.readFileSync(targetPath, 'utf8')
+      const replacementMatches = [
+        operation.replace,
+        operation.replace.includes('\n') && !operation.replace.includes('\r\n')
+          ? operation.replace.replace(/\n/g, '\r\n')
+          : null
+      ].filter(Boolean).some(replacement => source.includes(replacement))
+      if (!replacementMatches) {
+        throw new Error(`合成候选未包含业务覆盖结果：${relative} -> ${targetRelative}`)
+      }
+    }
+    applied.push(relative)
+  }
+  return applied
+}
+
 // writeMetadata 落盘基座、全过程、映射和候选摘要，供打包、构建与健康检查逐级对账。
-function writeMetadata (manifest, base, business, candidateDigest, businessDigestValue, selectedCount) {
+function writeMetadata (manifest, base, business, candidateDigest, businessDigestValue, selectedCount, localOverrideCount) {
   const data = {
     schemaVersion: 2,
     repository: 'composed-flow-source',
@@ -380,6 +492,7 @@ function writeMetadata (manifest, base, business, candidateDigest, businessDiges
     businessHead: business.head,
     businessDigest: businessDigestValue,
     businessFileCount: selectedCount,
+    localOverrideCount,
     preparedAt: new Date().toISOString()
   }
   fs.writeFileSync(metadataPath, `${JSON.stringify(data, null, 2)}\n`)
@@ -417,6 +530,7 @@ export function prepareSource () {
     const baseDigest = digestDirectory(candidateRoot)
     const selected = collectMappingFiles(businessRepo, manifest)
     applyBusinessMappings(businessRepo, candidateRoot, manifest, selected)
+    const appliedOverrides = applyLocalOverrides(candidateRoot, manifest)
     removeEmptyDirectories(path.join(candidateRoot, 'src'))
     removeEmptyDirectories(path.join(candidateRoot, 'public'))
     stageFormMaking(candidateRoot)
@@ -439,6 +553,7 @@ export function prepareSource () {
       businessHead: business.head,
       businessDigest: businessDigestValue,
       businessFileCount: selected.length,
+      localOverrideCount: appliedOverrides.length,
       preparedAt: new Date().toISOString()
     }
 
@@ -457,7 +572,7 @@ export function prepareSource () {
       if (!fs.existsSync(targetRoot) && fs.existsSync(backupRoot)) fs.renameSync(backupRoot, targetRoot)
       throw error
     }
-    writeMetadata(manifest, { ...base, digest: baseDigest }, business, candidateDigest, businessDigestValue, selected.length)
+    writeMetadata(manifest, { ...base, digest: baseDigest }, business, candidateDigest, businessDigestValue, selected.length, appliedOverrides.length)
     process.stdout.write(`[GIT] 合成完成：基座 ${base.head} + 全过程 test ${business.head}，纳入 ${metadata.businessFileCount} 个业务文件\n`)
     return metadata
   } finally {

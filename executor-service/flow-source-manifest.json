@@ -57,6 +57,11 @@
       "kind": "file"
     }
   ],
+  "localOverrides": [
+    {
+      "file": "flow-source-overrides/contract-seal-review.json"
+    }
+  ],
   "protected": [
     "src/App.vue",
     "src/main.js",

@@ -146,3 +146,21 @@ func TestRuntimeFlowEndpointsAreKnownWrites(t *testing.T) {
 		}
 	}
 }
+
+// TestRuntimeBusinessEndpointsAreKnownWrites 锁定 runtime 页面合同业务写与附件关系写的断线判定口径。
+func TestRuntimeBusinessEndpointsAreKnownWrites(t *testing.T) {
+	for _, endpoint := range []string{
+		target.ContractReviewIncreaseEndpoint,
+		target.ContractReviewModifyEndpoint,
+		target.ContractReviewSaveRefFileEndpoint,
+		target.RelationFileSaveBatchEndpoint,
+		target.RelationFileDeleteEndpoint,
+	} {
+		if !target.IsKnownWriteRequestPath(endpoint) || !target.IsKnownWriteRequestPath("/api"+endpoint) {
+			t.Fatalf("合同业务端点未登记为写请求：%s", endpoint)
+		}
+	}
+	if target.IsKnownWriteRequestPath("/web/measuring/api/contractReview/queryList") {
+		t.Fatal("合同查询端点不得登记为写请求")
+	}
+}

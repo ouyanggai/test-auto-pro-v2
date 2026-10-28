@@ -25,6 +25,16 @@ const (
 	WriteEndpointUrge            = "/web/urgeHandleRecord/sendUrgeMessage"
 	WriteEndpointTranspond       = "/web/flowInstanceApi/transpond"
 	WriteEndpointFlowTracking    = "/web/flowInstanceApi/flowTracking"
+	// ContractReviewIncreaseEndpoint 是合同盖章评审发起时保存合同的业务写端点。
+	ContractReviewIncreaseEndpoint = "/web/measuring/api/contractReview/increase"
+	// ContractReviewModifyEndpoint 是合同盖章评审审批/重提时修改合同的业务写端点。
+	ContractReviewModifyEndpoint = "/web/measuring/api/contractReview/modify"
+	// ContractReviewSaveRefFileEndpoint 是合同与附件临时业务关系保存端点。
+	ContractReviewSaveRefFileEndpoint = "/web/measuring/api/contractReview/saveContractRefFile"
+	// RelationFileSaveBatchEndpoint 是附件与临时业务 ID 批量绑定端点。
+	RelationFileSaveBatchEndpoint = "/web/file/api/relationFile/saveBatch"
+	// RelationFileDeleteEndpoint 是附件与临时业务 ID 解除关系端点。
+	RelationFileDeleteEndpoint = "/web/file/api/relationFile/deleteByRelationIdAndFileIds"
 )
 
 // RuntimeSubmitEndpoint 是页面正式发起流程的新工作流端点；保存草稿仍使用 WriteEndpointSubmit。

@@ -115,11 +115,15 @@ export function nativeDispatch (native: NativeCaptured | undefined, input: Dispa
       break
     case 'approve':
     case 'reject':
-      // 容错：dealFormBusiness 仅当节点表单内真实挂载了自定义业务组件（如 custom_contractSealField）时才委托；
-      // 若当前审批节点表单未配置该组件（getComponent 返回空），原生代码未判空会导致抛出 TypeError 并阻断主流程审批。
-      // 此处安全兜底：若自定义组件缺失，平滑回退到普通流程审批 func(flag, type)。
+      // 合同业务是流程写请求的前置条件；组件缺失或业务方法异常时必须阻断，
+      // 不能用普通审批写请求顶替，否则会留下合同未保存但流程已经推进的脏状态。
       {
         const rawComp = component as unknown as { dealFormBusiness?: (func: (flag: unknown, type: unknown) => unknown, flag: unknown, type: unknown) => unknown }
+        const selectFlowType = String((component as { selectFlowType?: unknown }).selectFlowType ?? '')
+        const requiresBusinessComponent = selectFlowType === 'contract_seal_review' || selectFlowType === 'contract_compliance_review'
+        if (requiresBusinessComponent && typeof rawComp.dealFormBusiness !== 'function') {
+          throw new Error(`流程类型 ${selectFlowType} 缺少 dealFormBusiness，已阻止普通流程审批`)
+        }
         if (typeof rawComp.dealFormBusiness === 'function' && !(rawComp.dealFormBusiness as { __patched?: boolean }).__patched) {
           const patchedDeal = function (this: unknown, func: (flag: unknown, type: unknown) => unknown, flag: unknown, type: unknown) {
             try {
@@ -130,13 +134,12 @@ export function nativeDispatch (native: NativeCaptured | undefined, input: Dispa
                   : null
               const customField = fieldName && typeof generateForm?.getComponent === 'function' ? generateForm.getComponent(fieldName) : null
               if (customField && typeof (customField as { contractBusiness?: unknown }).contractBusiness === 'function') {
-                (customField as { contractBusiness: (form: unknown, that: unknown, flag: unknown, type: unknown) => unknown }).contractBusiness(generateForm, self, flag, type)
-                return
+                return (customField as { contractBusiness: (form: unknown, that: unknown, flag: unknown, type: unknown) => unknown }).contractBusiness(generateForm, self, flag, type)
               }
-            } catch {
-              // 自定义组件异常时平滑回退到标准流程审批
+              throw new Error(`流程类型 ${self?.selectFlowType ?? ''} 缺少自定义业务组件，已阻止普通流程审批`)
+            } catch (error) {
+              throw new Error(`自定义业务前置处理失败：${String((error as Error)?.message ?? error)}`)
             }
-            func.call(this, flag, type)
           }
           ;(patchedDeal as { __patched?: boolean }).__patched = true
           rawComp.dealFormBusiness = patchedDeal

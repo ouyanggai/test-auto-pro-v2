@@ -88,6 +88,7 @@ class PackageTest(unittest.TestCase):
             'mappingVersion': manifest['mappingVersion'],
             'mappings': manifest['mappings'],
             'protected': manifest['protected'],
+            'localOverrides': [],
         }, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
         self.write('executor-service/flow-source.json', json.dumps({
             'schemaVersion': 2,
@@ -106,6 +107,7 @@ class PackageTest(unittest.TestCase):
             'businessHead': 'c' * 40,
             'businessDigest': 'd' * 64,
             'businessFileCount': 1,
+            'localOverrideCount': 0,
             'preparedAt': '2026-10-27T00:00:00.000Z',
         }, ensure_ascii=False))
         self.run_git('add', 'web', 'deploy', 'form-runtime', 'executor-service/flow-source-manifest.json')
@@ -142,6 +144,7 @@ class PackageTest(unittest.TestCase):
             self.assertEqual(release_source['baseRemote'], 'base-remote')
             self.assertEqual(release_source['businessRemote'], 'business-remote')
             self.assertEqual(release_source['businessHead'], 'c' * 40)
+            self.assertEqual(release_source['localOverrideCount'], 0)
             self.assertEqual(release_source['candidateDigest'], candidate_digest(self.root))
 
     def test_changed_candidate_is_rejected_before_packaging(self):

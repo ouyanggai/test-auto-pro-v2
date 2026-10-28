@@ -242,6 +242,11 @@ var writeEndpointWhitelist = []string{
 	target.RuntimeReSubmitEndpoint,
 	target.RuntimeAuditEndpoint,
 	"flowInstancePostscript/save",
+	target.ContractReviewIncreaseEndpoint,
+	target.ContractReviewModifyEndpoint,
+	target.ContractReviewSaveRefFileEndpoint,
+	target.RelationFileSaveBatchEndpoint,
+	target.RelationFileDeleteEndpoint,
 }
 
 // isWriteEndpoint 判断端点是否属于写白名单：旧日志缺 request_class 字段时按端点兜底归类，

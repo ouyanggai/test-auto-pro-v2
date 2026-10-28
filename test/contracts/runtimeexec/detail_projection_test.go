@@ -108,3 +108,20 @@ func TestNewWorkflowSubmitIsFlowWrite(t *testing.T) {
 		t.Fatalf("新提交阶段或请求分类错误：%+v", detail)
 	}
 }
+
+// TestContractBusinessFailureProjectsToFormStage 合同业务前置失败必须显示在表单业务阶段，流程动作保持未发。
+func TestContractBusinessFailureProjectsToFormStage(t *testing.T) {
+	trace := json.RawMessage(`[{"seq":1,"method":"POST","url":"https://t/api` + target.ContractReviewModifyEndpoint + `","state":"fulfilled","httpStatus":200}]`)
+	detail := runtimeexec.BuildDetailProjection(runtimeexec.ActionRunResult{
+		Status: "business_failed", Message: "ERROR_99999：合同不存在或发起未成功",
+	}, trace, "v2")
+	if detail.Stages[0].State != runtimeexec.StageFailed || detail.Stages[1].State != runtimeexec.StagePending {
+		t.Fatalf("合同业务失败必须落在表单业务阶段：%v", detail.Stages)
+	}
+	if detail.Stages[0].Note == "" {
+		t.Fatal("表单业务阶段必须保留目标失败原因")
+	}
+	if detail.Requests[0].RequestClass != "write" {
+		t.Fatalf("合同修改请求必须分类为写：%v", detail.Requests[0])
+	}
+}

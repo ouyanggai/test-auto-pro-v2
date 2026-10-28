@@ -176,6 +176,7 @@ def package(root, destination):
             'mappingHash': metadata['mappingHash'],
             'candidateDigest': metadata['candidateDigest'],
             'businessDigest': metadata['businessDigest'],
+            'localOverrideCount': metadata.get('localOverrideCount', 0),
             'trackedWorktree': True
         }
         add_bytes(output, 'deploy/release-source.json', json.dumps(data, ensure_ascii=False).encode('utf-8'))

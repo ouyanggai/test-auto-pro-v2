@@ -21,7 +21,7 @@ import { synchronizeNativeForm } from './native-form-values.ts'
 import { nativeAuthQuery } from './native-runtime-auth.ts'
 import { canContinueChoice } from './native-actions.ts'
 import { nativeChoiceContinue, nativeDispatch, type ChoiceContinueChoice, type DispatchInput } from './native-dispatch.ts'
-import { choiceErrorTypeFromResponse, forwardInstanceID, isPermissionCheckSubmit, settleCompletion, WriteGate } from './completion.ts'
+import { choiceErrorTypeFromResponse, forwardInstanceID, isPermissionCheckSubmit, KNOWN_WRITE_PATHS, settleCompletion, WriteGate } from './completion.ts'
 import type { Page } from 'playwright'
 import { ExecutionBaselineRecorder, describeBaselineError, type BaselineSpan } from './execution-baseline.ts'
 import { readBaselineSource } from './baseline-source.ts'
@@ -1389,11 +1389,8 @@ async function main (): Promise<void> {
             // 供失败诊断与端点级证据核对。
             const debugWrites = session.route!.trace.list()
               .filter(e => e.seq > baselineSeq &&
-                ['/web/flowInstanceApi/submit', '/newWorkflowCenter/flowInstance/submit',
-                  '/newWorkflowCenter/flowInstance/reSubmit', '/newWorkflowCenter/flowInstance/flowAudit',
-                  '/flowInstanceApi/audit', '/web/flowInstanceApi/transpond',
-                  '/web/flowInstanceApi/storageFormData', '/web/flowInstanceApi/reSubmit',
-                  '/web/flowInstancePostscript/save'].some(p => e.url.includes(p)))
+                e.method === 'POST' &&
+                KNOWN_WRITE_PATHS.some(p => e.url.includes(p)))
               .map(e => {
                 let bodyText = e.body ?? ''
                 if (e.bodyEncoding === 'base64') bodyText = Buffer.from(bodyText, 'base64').toString('utf8')

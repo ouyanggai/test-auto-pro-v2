@@ -13,7 +13,7 @@ import { CHOICE_ERRORS } from './native-actions.ts'
 //   正式提交/重提/审批已切换到 newWorkflowCenter 的三个端点；
 //   transpondFlow=/web/flowInstanceApi/transpond、storageFormData=/web/flowInstanceApi/storageFormData。
 // 曾被错写的 temporaryStorage/reEdit 端点在目标源码中不存在，已删除。
-const FLOW_WRITE_PATHS = [
+export const FLOW_WRITE_PATHS = [
   '/web/flowInstanceApi/submit',
   '/newWorkflowCenter/flowInstance/submit',
   '/newWorkflowCenter/flowInstance/reSubmit',
@@ -35,6 +35,19 @@ const ACTION_WRITE_PATH: Record<string, string> = {
 }
 
 const FORWARD_POSTSCRIPT_PATH = '/web/flowInstancePostscript/save'
+
+// BUSINESS_WRITE_PATHS 是表单业务组件在流程主写之前使用的真实写端点。
+// 这些请求同样有目标副作用，响应失败或丢失时不能再发主流程请求。
+export const BUSINESS_WRITE_PATHS = [
+  '/web/measuring/api/contractReview/increase',
+  '/web/measuring/api/contractReview/modify',
+  '/web/measuring/api/contractReview/saveContractRefFile',
+  '/web/file/api/relationFile/saveBatch',
+  '/web/file/api/relationFile/deleteByRelationIdAndFileIds'
+]
+
+// KNOWN_WRITE_PATHS 供服务端调试证据统一筛选，避免业务写被误当成读取。
+export const KNOWN_WRITE_PATHS = [...new Set([...FLOW_WRITE_PATHS, ...BUSINESS_WRITE_PATHS, FORWARD_POSTSCRIPT_PATH])]
 
 export type CompletionVerdict = 'success' | 'target_rejected' | 'uncertain' | 'business_failed' | 'failed' | 'timeout'
 
@@ -131,6 +144,32 @@ function hasExplicitSuccess (entry: TraceEntry): boolean {
   return parseForwardJSON(entry.response.body, entry.response.bodyEncoding)?.isSuccess === true
 }
 
+// isBusinessWriteEntry 判定表单业务前置写，必须同时满足 POST 和业务端点白名单。
+export function isBusinessWriteEntry (entry: { method?: string, url: string }): boolean {
+  if (entry.method !== undefined && entry.method !== 'POST') return false
+  return BUSINESS_WRITE_PATHS.some(path => entry.url.includes(path))
+}
+
+// responseFailureMessage 保留目标返回的 code 与中文原话，避免执行器再压成泛化错误。
+function responseFailureMessage (parsed: Record<string, unknown>, fallback: string): string {
+  const code = typeof parsed.code === 'string' ? parsed.code.trim() : ''
+  const message = typeof parsed.message === 'string' && parsed.message.trim() ? parsed.message : fallback
+  return code ? `${code}：${message}` : message
+}
+
+// detectBusinessRejection 解析业务写的明确拒绝；未明确拒绝的异常响应交给 uncertain 判定。
+export function detectBusinessRejection (entry: FlowRejectionInput): string | null {
+  if (!isBusinessWriteEntry(entry)) return null
+  if (entry.state !== 'fulfilled' || !entry.response) return null
+  if (entry.response.httpStatus === 401) return 'SID已失效'
+  if (entry.response.httpStatus !== 200) return `HTTP ${entry.response.httpStatus}`
+  const parsed = parseForwardJSON(entry.response.body, entry.response.bodyEncoding)
+  if (!parsed) return null
+  if (parsed.code === 'RESP401' || parsed.code === 'AUTH_401' || parsed.message === 'SID已失效') return 'SID已失效'
+  if (parsed.isSuccess === false) return responseFailureMessage(parsed, '目标业务拒绝')
+  return null
+}
+
 // forwardInstanceID 只从明确成功的转发响应取新实例 ID；HTTP 200 本身不能证明成功。
 export function forwardInstanceID (entry: ForwardStepEntry | undefined): string {
   if (!entry || entry.state !== 'fulfilled' || entry.response?.httpStatus !== 200) return ''
@@ -179,7 +218,7 @@ export function detectFlowRejection (entry: FlowRejectionInput): string | null {
       return `选择要求未闭环：${parsed?.message ?? choiceErrorType}`
     }
     if (parsed && parsed.isSuccess === false) {
-      return parsed.message ?? '目标拒绝'
+      return responseFailureMessage(parsed, '目标拒绝')
     }
   } catch {
     return '响应正文无法解析'
@@ -257,19 +296,45 @@ function isFlowWriteEntry (entry: { method?: string, url: string, body?: string,
   return !isPermissionCheckSubmit(entry)
 }
 
+// isKnownWriteEntry 汇总流程、业务和转发附言写，供完成检测避免把业务副作用丢掉。
+function isKnownWriteEntry (entry: { method?: string, url: string, body?: string, bodyEncoding?: string }): boolean {
+  return isFlowWriteEntry(entry) || isBusinessWriteEntry(entry) || entry.url.includes(FORWARD_POSTSCRIPT_PATH)
+}
+
 function finalize (input: CompletionInput, entries: TraceEntry[]): CompletionResult {
   const requestTrace = summarize(entries)
   const expectedPath = ACTION_WRITE_PATH[input.action]
-  const allWriteEntries = entries.filter(entry => entry.method === 'POST' && (isFlowWriteEntry(entry) || entry.url.includes(FORWARD_POSTSCRIPT_PATH)))
+  const allWriteEntries = entries.filter(entry => entry.method === 'POST' && isKnownWriteEntry(entry))
+  const businessEntries = entries.filter(entry => entry.method === 'POST' && isBusinessWriteEntry(entry))
   const expectedEntries = expectedPath
     ? entries.filter(entry => entry.method === 'POST' && entry.url.includes(expectedPath) && !isPermissionCheckSubmit(entry))
     : []
   if (!expectedPath) return { status: 'failed', message: `动作 ${input.action} 没有登记期望写端点`, requestTrace }
+  // 前置业务事实优先于流程主写事实：即使迟到的主写已经出现，也不能覆盖合同保存失败。
+  const businessRejected = businessEntries.map(detectBusinessRejection).find(Boolean)
+  if (businessRejected) {
+    return { status: 'business_failed', message: `表单业务处理失败：${businessRejected}`, requestTrace }
+  }
+  const businessLost = businessEntries.find(entry => entry.state === 'aborted')
+  if (businessLost) {
+    return { status: 'uncertain', message: `表单业务写响应丢失：${businessLost.url}；主流程禁止继续或重发`, requestTrace }
+  }
+  const businessBlocked = businessEntries.find(entry => entry.state === 'blocked')
+  if (businessBlocked) {
+    return { status: 'failed', message: `表单业务写请求被本地阻止：${businessBlocked.abortReason ?? businessBlocked.url}`, requestTrace }
+  }
+  const businessUnknown = businessEntries.find(entry => !hasExplicitSuccess(entry))
+  if (businessUnknown) {
+    return { status: 'uncertain', message: `表单业务写响应缺少明确成功标记：${businessUnknown.url}；主流程禁止继续或重发`, requestTrace }
+  }
   if (expectedEntries.length === 0) {
     if (input.formValidationError) {
       return { status: 'failed', message: `表单数据缺失无法发起请求，请检查表单数据（${input.formValidationError}）`, requestTrace }
     }
     if (allWriteEntries.length > 0) {
+      if (businessEntries.length > 0) {
+        return { status: 'business_failed', message: `表单业务已完成，但未发出期望流程写端点 ${expectedPath}，已阻止流程继续`, requestTrace }
+      }
       return { status: 'failed', message: `动作未调用期望写端点 ${expectedPath}，实际调用了 ${allWriteEntries.map(entry => entry.url).join('、')}`, requestTrace }
     }
     return { status: 'failed', message: `动作没有发出期望写请求 ${expectedPath}`, requestTrace }

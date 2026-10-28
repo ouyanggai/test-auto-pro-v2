@@ -78,6 +78,76 @@ test('普通业务拒绝判 target_rejected 并保留目标消息', async () => 
   assert.match(String(verdict.message), /任务已经处理/)
 })
 
+test('合同业务接口明确拒绝时保留 code 和目标原话，不误报流程主写缺失', async () => {
+  const verdict = await settleCompletion({
+    ...base,
+    action: 'approve',
+    trace: seedTrace([{
+      method: 'POST',
+      url: 'https://t/api/web/measuring/api/contractReview/modify',
+      state: 'fulfilled',
+      body: encoded({ isSuccess: false, code: 'ERROR_99999', message: '合同不存在或发起未成功，请重新新建合同后操作' })
+    }])
+  })
+  assert.equal(verdict.status, 'business_failed')
+  assert.match(String(verdict.message), /ERROR_99999/)
+  assert.match(String(verdict.message), /合同不存在或发起未成功/)
+})
+
+test('合同业务保存成功但流程主写未发出时判业务阶段失败', async () => {
+  const verdict = await settleCompletion({
+    ...base,
+    action: 'approve',
+    trace: seedTrace([{
+      method: 'POST',
+      url: 'https://t/api/web/measuring/api/contractReview/modify',
+      state: 'fulfilled',
+      body: ok({ data: { id: 'contract-1' } })
+    }])
+  })
+  assert.equal(verdict.status, 'business_failed')
+  assert.match(String(verdict.message), /未发出期望流程写端点/)
+})
+
+test('合同业务写响应丢失时判待确认并锁住后续流程写', async () => {
+  const writeGate = new WriteGate()
+  const verdict = await settleCompletion({
+    ...base,
+    action: 'approve',
+    trace: seedTrace([{
+      method: 'POST',
+      url: 'https://t/api/web/measuring/api/contractReview/modify',
+      state: 'aborted'
+    }]),
+    writeGate
+  })
+  assert.equal(verdict.status, 'uncertain')
+  assert.equal(writeGate.isLocked, true)
+})
+
+test('前置合同业务失败优先于迟到的流程主写成功', async () => {
+  const verdict = await settleCompletion({
+    ...base,
+    action: 'approve',
+    trace: seedTrace([
+      {
+        method: 'POST',
+        url: 'https://t/api/web/measuring/api/contractReview/modify',
+        state: 'fulfilled',
+        body: encoded({ isSuccess: false, code: 'ERROR_99999', message: '合同状态不允许修改' })
+      },
+      {
+        method: 'POST',
+        url: 'https://t/api/newWorkflowCenter/flowInstance/flowAudit',
+        state: 'fulfilled',
+        body: ok()
+      }
+    ])
+  })
+  assert.equal(verdict.status, 'business_failed')
+  assert.match(String(verdict.message), /ERROR_99999/)
+})
+
 test('选择要求被后续同端点成功覆盖时判 success', async () => {
   const verdict = await settleCompletion({
     ...base,

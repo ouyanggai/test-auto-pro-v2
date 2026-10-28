@@ -77,6 +77,7 @@ func BuildDetailProjection(result ActionRunResult, requestTrace json.RawMessage,
 		_ = json.Unmarshal(requestTrace, &entries)
 	}
 	flowSeq := -1
+	businessCount := 0
 	summaries := make([]RuntimeRequestSummary, 0, len(entries))
 	for _, entry := range entries {
 		summaries = append(summaries, RuntimeRequestSummary{
@@ -91,6 +92,9 @@ func BuildDetailProjection(result ActionRunResult, requestTrace json.RawMessage,
 		})
 		if isFlowPath(entry.URL) && entry.State == "fulfilled" && (flowSeq == -1 || entry.Seq < flowSeq) {
 			flowSeq = entry.Seq
+		}
+		if isBusinessPath(entry.URL) {
+			businessCount++
 		}
 	}
 	detail.Requests = summaries
@@ -128,14 +132,20 @@ func BuildDetailProjection(result ActionRunResult, requestTrace json.RawMessage,
 	case afterFailed || result.Status == "business_failed":
 		afterState = StageFailed
 	}
+	formState := StageState(StageDone)
+	formNote := ""
+	switch {
+	case businessCount > 0 && (result.Status == "business_failed" || result.Status == "target_rejected"):
+		formState, formNote = StageFailed, result.Message
+	case businessCount > 0 && (result.Status == "uncertain" || result.Status == "timeout"):
+		formState, formNote = StageUncertain, result.Message
+	case before == 0 && flow == 0 && strings.EqualFold(result.Status, "failed"):
+		formState, formNote = StageFailed, result.Message
+	}
 	detail.Stages = []RuntimeStage{
-		{Name: "表单业务处理", State: StageDone, Requests: before},
+		{Name: "表单业务处理", State: formState, Note: formNote, Requests: before},
 		{Name: "流程动作", State: flowState, Requests: flow},
 		{Name: "提交后业务处理", State: afterState, Requests: after},
-	}
-	// 表单业务阶段失败口径：首笔请求就中止（装载后的首个目标请求失败）说明表单链路未走通。
-	if before == 0 && flow == 0 && strings.EqualFold(result.Status, "failed") {
-		detail.Stages[0].State = StageFailed
 	}
 	return detail
 }
@@ -167,4 +177,20 @@ func isFlowPath(raw string) bool {
 		strings.Contains(raw, "/flowInstanceApi/audit") ||
 		strings.Contains(raw, "/web/flowInstanceApi/reSubmit") ||
 		strings.Contains(raw, "/web/flowInstanceApi/transpond")
+}
+
+// isBusinessPath 判定表单业务前置写端点，和执行器完成判定使用同一组目标路径。
+func isBusinessPath(raw string) bool {
+	for _, path := range []string{
+		target.ContractReviewIncreaseEndpoint,
+		target.ContractReviewModifyEndpoint,
+		target.ContractReviewSaveRefFileEndpoint,
+		target.RelationFileSaveBatchEndpoint,
+		target.RelationFileDeleteEndpoint,
+	} {
+		if strings.Contains(raw, path) {
+			return true
+		}
+	}
+	return false
 }

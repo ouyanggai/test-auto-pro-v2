@@ -106,7 +106,8 @@ function createFixture (context: TestContext): {
   const business = createRepository(temporaryRoot, 'business', {
     'src/views/FlowDetail.vue': '全过程业务页不应覆盖路由适配页',
     'src/views/GroupApproveManage/contract.js': 'test 分支合同评审页面',
-    'src/components/Business.js': 'test 分支业务组件',
+    'src/components/Business.js': 'test 分支业务组件\n',
+    'src/components/CrLf.js': '第一行\r\n第二行\r\n',
     'src/utils/contractAmount.js': 'export function getContractAmountFields() { return { contractSum: 0 } }',
     'src/assets/contract.svg': '<svg />',
     'src/api/index.js': 'test 分支接口'
@@ -138,6 +139,10 @@ function createFixture (context: TestContext): {
       { source: 'src/assets', destination: 'src/assets', kind: 'directory' },
       { source: 'src/api/index.js', destination: 'src/api/index.js', kind: 'file' }
     ],
+    localOverrides: [
+      { file: 'flow-source-overrides/business.json' },
+      { file: 'flow-source-overrides/crlf.json' }
+    ],
     protected: [
       'src/components/InitFlowDialog/**',
       'src/lib/vue-form-making/**',
@@ -152,6 +157,24 @@ function createFixture (context: TestContext): {
     ]
   }
   write(serviceRoot, 'flow-source-manifest.json', JSON.stringify(manifest, null, 2))
+  write(serviceRoot, 'flow-source-overrides/business.json', JSON.stringify({
+    schemaVersion: 1,
+    target: 'src/components/Business.js',
+    operations: [{
+      find: 'test 分支业务组件\n',
+      replace: 'test 分支业务组件\n受控覆盖\n',
+      count: 1
+    }]
+  }, null, 2))
+  write(serviceRoot, 'flow-source-overrides/crlf.json', JSON.stringify({
+    schemaVersion: 1,
+    target: 'src/components/CrLf.js',
+    operations: [{
+      find: '第一行\n第二行\n',
+      replace: '第一行\n受控覆盖\n第二行\n',
+      count: 1
+    }]
+  }, null, 2))
 
   const updateWorktree = path.join(temporaryRoot, 'business-update')
   childProcess.execFileSync('git', ['clone', '-q', '--branch', 'test', business.remote, updateWorktree])
@@ -190,6 +213,7 @@ test('真实候选包含最新业务文件、适配层和受控 FormMaking 产�
   assert.equal(fs.existsSync(path.join(candidateRoot, 'src/utils/portalFlowAuth.js')), true)
   assert.equal(fs.existsSync(path.join(candidateRoot, 'src/views/FlowDetail.vue')), true)
   assert.equal(fs.existsSync(path.join(candidateRoot, 'src/views/FlowInitiate.vue')), true)
+  assert.equal(metadata.localOverrideCount, 1)
   assert.equal(fs.readFileSync(path.join(candidateRoot, 'src/components/Custom/components/Business/ContractSealReviewBusiness.vue'), 'utf8').includes('getContractAmountFields'), true)
   assert.equal(fs.readFileSync(path.join(candidateRoot, 'src/views/GroupApproveManage/Submitted/components/FlowDialog.vue'), 'utf8').includes('getContractRmbAmount'), true)
 })
@@ -206,6 +230,9 @@ test('临时远端只消费 test，不读取 oygdev2 工作树，远端前移后
   const first = readJson(path.join(fixture.serviceRoot, 'flow-source.json'))
   assert.equal(first.baseHead, firstBaseHead)
   assert.equal(first.businessHead, firstBusinessHead)
+  assert.equal(first.localOverrideCount, 2)
+  assert.equal(fs.readFileSync(path.join(fixture.serviceRoot, 'flow-source/src/components/Business.js'), 'utf8'), 'test 分支业务组件\r\n受控覆盖\r\n')
+  assert.equal(fs.readFileSync(path.join(fixture.serviceRoot, 'flow-source/src/components/CrLf.js'), 'utf8'), '第一行\r\n受控覆盖\r\n第二行\r\n')
   assert.equal(fs.readFileSync(path.join(fixture.serviceRoot, 'flow-source/src/views/FlowDetail.vue'), 'utf8'), '执行器路由适配详情页')
   assert.equal(fs.readFileSync(path.join(fixture.serviceRoot, 'flow-source/src/views/FlowInitiate.vue'), 'utf8'), '执行器路由适配发起页')
   assert.equal(beforeBranch, 'oygdev2')
@@ -256,6 +283,35 @@ test('来源清单残留固定 head 时拒绝准备', context => {
 
   assert.match(runSyncFailure(fixture.serviceRoot, fixture.workspaceRoot), /不能固定 rsh-flow-components 的 head/)
   assert.equal(fs.existsSync(path.join(fixture.serviceRoot, 'flow-source.json')), false)
+})
+
+test('业务覆盖上下文漂移时拒绝准备且不生成候选', context => {
+  const fixture = createFixture(context)
+  const overridePath = path.join(fixture.serviceRoot, 'flow-source-overrides/business.json')
+  const override = readJson(overridePath)
+  override.operations[0].find = '来源已被替换'
+  write(fixture.serviceRoot, 'flow-source-overrides/business.json', JSON.stringify(override, null, 2))
+
+  assert.match(runSyncFailure(fixture.serviceRoot, fixture.workspaceRoot), /业务覆盖上下文不匹配/)
+  assert.equal(fs.existsSync(path.join(fixture.serviceRoot, 'flow-source.json')), false)
+  assert.equal(fs.existsSync(path.join(fixture.serviceRoot, 'flow-source')), false)
+})
+
+test('业务覆盖内容变化会改变映射摘要并重新生成候选', context => {
+  const fixture = createFixture(context)
+  runSync(fixture.serviceRoot, fixture.workspaceRoot)
+  const first = readJson(path.join(fixture.serviceRoot, 'flow-source.json'))
+
+  const overridePath = path.join(fixture.serviceRoot, 'flow-source-overrides/business.json')
+  const override = readJson(overridePath)
+  override.operations[0].replace = 'test 分支业务组件\n受控覆盖第二版\n'
+  write(fixture.serviceRoot, 'flow-source-overrides/business.json', JSON.stringify(override, null, 2))
+  runSync(fixture.serviceRoot, fixture.workspaceRoot)
+  const second = readJson(path.join(fixture.serviceRoot, 'flow-source.json'))
+
+  assert.notEqual(second.mappingHash, first.mappingHash)
+  assert.notEqual(second.candidateDigest, first.candidateDigest)
+  assert.match(fs.readFileSync(path.join(fixture.serviceRoot, 'flow-source/src/components/Business.js'), 'utf8'), /受控覆盖第二版/)
 })
 
 test('候选被改动或业务远端不可读时明确失败，不沿用旧候选', context => {

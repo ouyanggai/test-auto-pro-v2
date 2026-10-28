@@ -98,7 +98,7 @@ test('同意/不同意走 submitCheckBefore 原生入口且互不误触', () => 
   assert.equal(((tree.flowDetail ?? tree.initFlow) as unknown as { $children: Array<{ approveForm: { approveMessage: string } }> }).$children[0]!.approveForm.approveMessage, '同意意见')
   assert.deepEqual(calls, ['pass', 'no_pass', 'pass'])
 })
-test('合同盖章审批缺失自定义业务组件时，平滑回退到普通审核', () => {
+test('合同盖章审批缺失自定义业务组件时，阻止普通审核写请求', () => {
   const calls: string[] = []
   const tree = makeTree('flowDetail', 'ExamineOpinion', {
     approveForm: { approveMessage: '' },
@@ -118,8 +118,8 @@ test('合同盖章审批缺失自定义业务组件时，平滑回退到普通�
       )
     }
   })
-  nativeDispatch(tree, { action: 'approve' })
-  assert.deepEqual(calls, ['audited-pass'])
+  assert.throws(() => nativeDispatch(tree, { action: 'approve' }), /自定义业务前置处理失败|缺少自定义业务组件/)
+  assert.deepEqual(calls, [])
 })
 
 test('重提走 saveSubmit("submit")', () => {
