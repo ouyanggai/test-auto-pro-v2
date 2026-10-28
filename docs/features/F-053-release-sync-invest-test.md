@@ -133,6 +133,10 @@
 
 ### 已执行验证
 
+- 2026-10-28 发起提交端点回退同步：全过程 `test` 前移到 `8aaaf2a0165cd676357fd89010fb000351a700dc`，其中关键回退 `2e10a724bd2000531701b44c3057e34a17e08c4e` 把发起正式提交从 `newWorkflowCenter.flowSubmit` 回退为老端点 `Api.schedule.saveFlowInstance=/web/flowInstanceApi/submit`（`FlowDialog.vue` 两处与 NoFormFlow `Flow.vue` 非重提提交；重提仍走新 `flowReSubmit`、审批仍走新 `flowAudit`，全仓已无 `flowSubmit` 页面调用方）。工具侧提交期望端点同步回退并删除 `RuntimeSubmitEndpoint` 登记：`completion.ts` 期望端点表与主写端点集、`target-route.ts` 流程名保护、`server.ts` 新实例解析、`runtime_forward.go` 写集合、`protocol_matrix.go` 新端点矩阵复制、`actioncatalog`、`runtimeexec/actions.go`、`detail.go`、`run_request_timings.go`；同端点 `data.checkPermissions` 权限预检仍不算正式写。
+- 验证通过：`go build ./...`；`go test ./internal/adapter/target ./test/contracts/executor-service ./test/contracts/form-runtime ./test/contracts/runtimeexec ./test/unit/backend/action_orchestration ./test/unit/backend/target`；`go test ./test/contracts/f035/protocol -run "TestProtocolMatrixRegistry|TestActionBodiesMatchMatrix|TestSubmitBody"`；`pnpm --dir executor-service typecheck`；`node --experimental-strip-types --test test/unit/executor-service/completion.test.ts test/unit/executor-service/target-route.test.ts`（37 项，覆盖预检与正式写同端点区分、草稿/提交各自成功）。
+- 2026-10-28 11:06 发布 `20261028-110626-8711dcfb` 成功：服务器 `last-release.json` 与 `deploy/release-source.json` 均为 revision `9df2087f758f2bd41b045bdfc4644b2eeeca3d61`，基座 `test` `546ca9c87a5155428f4a904efbf26c7b814a6289`、全过程 `test` `8aaaf2a0165cd676357fd89010fb000351a700dc`，候选摘要 `ae234271754c56c8add877983b06fdd21e2706af49f249998cccbfff809d4fae`，映射摘要 `adb4aac09d1f9b59c3aa9c8b448281e80f50876485d10ff538e2e7cb67e1d83d`，项目内覆盖数量 1；执行器 `/health` 的 flowSource 与 nativePageBuild 报告同一候选摘要与双来源 HEAD。本地候选 `FlowDialog.vue` 三处提交均为 `Api.schedule.saveFlowInstance`、无 `flowSubmit` 残留。六服务 healthy，HTTP、Chromium 启动（153.0.8010.12）与日志双向挂载验活通过。未重试旧运行、未发送新的目标业务写。
+
 - 2026-10-27 新工作流端点修复：运行 6 的失败事实为旧 `/web/flowInstanceApi/submit` 权限预检成功后，正式请求已改为 `POST /api/newWorkflowCenter/flowInstance/submit` 并返回 `isSuccess=true`、创建实例 `3b98cc7fb0694730832b71d07de5eb30`；工具完成检测仍等待旧正式端点，因此误报“动作没有发出期望写请求”。已将 runtime 正式 `submit`、`resubmit`、`approve`、`reject` 切换到新工作流端点，保存草稿保持旧 submit，权限预检继续排除，不把预检当写。目标路径转发、写出白名单、协议矩阵、动作目录、运行详情阶段与新实例 ID 解析同步更新。
 - `go build ./cmd/server` 与 `node executor-service/scripts/build-native-page.js` 通过；页面构建保留 4 项既有路由导出 / 资源体积警告，无构建错误。
 - `node --experimental-strip-types --test test/unit/executor-service/completion.test.ts test/unit/executor-service/target-route.test.ts`：29 项通过，覆盖权限预检 + 新正式提交、保存草稿旧端点、正式提交拒绝旧端点、新重提端点、新端点流程名恢复与 `/newWorkflowCenter` 路由。
@@ -177,6 +181,7 @@
 
 ## 状态记录
 
+- 2026-10-28 `ready_for_manual`：全过程 `test` 关键回退（`2e10a724b` 发起提交回退老端点 `flowInstanceApi/submit`）已适配工具侧全部门禁并随发布 `20261028-110626-8711dcfb` 上线；重提/审批保持新工作流端点，同端点权限预检不算写。另收口此前漏提交的终态明细测试对齐（`354d272`）。等待用户强刷后以新发起路径人工验收提交走老端点、表单显示与节点流转，不自动标记 accepted。
 - 2026-10-27 发布后 `ready_for_manual`：按用户“每次发布同步最新、本项目保留修改、发布到服务器验收”的要求完成三次真实发布收敛；前两次发布分别暴露 live 产物挂载点和 runtime-source 镜像层目录不能 rename 的实际容器边界，已用挂载点内切换和源码目录内替换修复并补充回归。最终发布、表单维护任务和六服务验活通过，等待用户浏览器人工验收，不自动标记 accepted。
 - 2026-10-27 `ready_for_manual`：按用户最新收敛要求改为全过程 `test` 完整应用源码作为页面主体，仅保留执行器 `/flow` 适配层；修正同步依赖不匹配与路由适配页被删除的问题。真实远端候选、真实 `--package-only`、打包/失败边界、14 项 Node 回归、3 项 Python 打包测试、类型检查、Python 编译与正式页面构建通过。实现提交 `e8e7647`。下一步由用户安排发布，核对来源版本和真实合同参数；身份编码报错若重现仍独立采证，不放宽校验。
 - 2026-10-28 `implementing`：线上复现 `oyg测试10` 第 16 步在 `contractReview/modify` 返回 HTTP 200 但 `isSuccess=false`、`ERROR_99999`。修复合同审批初始化时序、当前合同状态读取、合同与附件业务写顺序、业务失败/响应丢失终局判定、缺失自定义业务组件阻断和运行详情表单业务阶段投影；新增项目内受控覆盖及 CRLF 匹配门禁。自动回归与正式页面构建通过后发布到服务器，继续停在 `ready_for_manual` 等待用户页面验收。
