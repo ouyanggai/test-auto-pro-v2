@@ -133,6 +133,10 @@
 
 ### 已执行验证
 
+- 2026-10-28 线上审批失败诊断与修复：`oyg测试11` 运行 1/运行 2 第 2 步审批「没有发出期望写请求 /newWorkflowCenter/flowInstance/flowAudit」。服务器取证：第 1 步提交成功（老端点，回退适配生效）；第 2 步装载合同审批表单期间 `ContractSealReviewBusiness` 实例 1 于 03:16:12 挂载并完成初始化读取（`contractReview/findById` 200），初始化收尾 `setData` 回写引起组件重建，实例 2 于 03:16:15 挂载但 `initFormInstance` 接线（`EnterpriseExamineDialog` 的 `jsonData` 监听器）不再发送，03:16:17 分发落在实例 2 上被「合同当前状态未读取成功，已阻止提交」阻断。修复 `4b1c742`：`contract-seal-review.json` 覆盖的 `contractBusiness` 门禁前增加分发时就地有界初始化（组件从未初始化且无错误时用第一个参数的表单实例补 `initFormInstance`）。
+- `node executor-service/scripts/sync-flow-source.js` 重新生成候选并确认修复块应用；`node --experimental-strip-types --test test/unit/executor-service/flow-source-sync.test.ts` 10 项通过（新增真实候选含就地补初始化断言）；`pnpm --dir executor-service typecheck` 通过。
+- 2026-10-28 11:32 发布 `20261028-113200-f9c22865` 成功：服务器 revision `4b1c7421e3ef1ae73bc8f4762c5a6f97a6600959`，基座 `546ca9c8`、全过程 `8aaaf2a0`，映射摘要 `c68390745e56134c6f736488f9d8ea1108235a42a8777daa1a80a428a7ffe85f`，候选摘要 `ff46c4f3b77d92b536a7c884a4979f518bac95d52cac081812401728914a58fc`，覆盖数量 1；执行器 `/health` 与服务器 `last-release.json` 一致，`docker exec` 确认容器内 `ContractSealReviewBusiness.vue` 含修复块。六服务 healthy，HTTP、Chromium 启动与日志挂载验活通过。未重试旧运行、未发送新的目标业务写。
+
 - 2026-10-28 发起提交端点回退同步：全过程 `test` 前移到 `8aaaf2a0165cd676357fd89010fb000351a700dc`，其中关键回退 `2e10a724bd2000531701b44c3057e34a17e08c4e` 把发起正式提交从 `newWorkflowCenter.flowSubmit` 回退为老端点 `Api.schedule.saveFlowInstance=/web/flowInstanceApi/submit`（`FlowDialog.vue` 两处与 NoFormFlow `Flow.vue` 非重提提交；重提仍走新 `flowReSubmit`、审批仍走新 `flowAudit`，全仓已无 `flowSubmit` 页面调用方）。工具侧提交期望端点同步回退并删除 `RuntimeSubmitEndpoint` 登记：`completion.ts` 期望端点表与主写端点集、`target-route.ts` 流程名保护、`server.ts` 新实例解析、`runtime_forward.go` 写集合、`protocol_matrix.go` 新端点矩阵复制、`actioncatalog`、`runtimeexec/actions.go`、`detail.go`、`run_request_timings.go`；同端点 `data.checkPermissions` 权限预检仍不算正式写。
 - 验证通过：`go build ./...`；`go test ./internal/adapter/target ./test/contracts/executor-service ./test/contracts/form-runtime ./test/contracts/runtimeexec ./test/unit/backend/action_orchestration ./test/unit/backend/target`；`go test ./test/contracts/f035/protocol -run "TestProtocolMatrixRegistry|TestActionBodiesMatchMatrix|TestSubmitBody"`；`pnpm --dir executor-service typecheck`；`node --experimental-strip-types --test test/unit/executor-service/completion.test.ts test/unit/executor-service/target-route.test.ts`（37 项，覆盖预检与正式写同端点区分、草稿/提交各自成功）。
 - 2026-10-28 11:06 发布 `20261028-110626-8711dcfb` 成功：服务器 `last-release.json` 与 `deploy/release-source.json` 均为 revision `9df2087f758f2bd41b045bdfc4644b2eeeca3d61`，基座 `test` `546ca9c87a5155428f4a904efbf26c7b814a6289`、全过程 `test` `8aaaf2a0165cd676357fd89010fb000351a700dc`，候选摘要 `ae234271754c56c8add877983b06fdd21e2706af49f249998cccbfff809d4fae`，映射摘要 `adb4aac09d1f9b59c3aa9c8b448281e80f50876485d10ff538e2e7cb67e1d83d`，项目内覆盖数量 1；执行器 `/health` 的 flowSource 与 nativePageBuild 报告同一候选摘要与双来源 HEAD。本地候选 `FlowDialog.vue` 三处提交均为 `Api.schedule.saveFlowInstance`、无 `flowSubmit` 残留。六服务 healthy，HTTP、Chromium 启动（153.0.8010.12）与日志双向挂载验活通过。未重试旧运行、未发送新的目标业务写。
@@ -180,6 +184,8 @@
 5. 配置侧 live 表单、已有计划与运行事实按发布前后的正常边界核对。原流程编码不一致若重现，保留当次所选实例与计划的编码证据另行排查，不绕过校验。
 
 ## 状态记录
+
+- 2026-10-28 `ready_for_manual`（合同审批初始化修复）：用户真实运行暴露 6cf2e25 合同门禁边界缺陷——初始化回写引起组件重建后接线丢失，审批被「合同当前状态未读取成功」阻断。已改为分发时就地补有界初始化并发布 `20261028-113200-f9c22865`（提交 `4b1c742`）。等待用户强刷后重新发起合同盖章评审路径人工验收第 2 步审批与后续流转，不自动标记 accepted。
 
 - 2026-10-28 `ready_for_manual`：全过程 `test` 关键回退（`2e10a724b` 发起提交回退老端点 `flowInstanceApi/submit`）已适配工具侧全部门禁并随发布 `20261028-110626-8711dcfb` 上线；重提/审批保持新工作流端点，同端点权限预检不算写。另收口此前漏提交的终态明细测试对齐（`354d272`）。等待用户强刷后以新发起路径人工验收提交走老端点、表单显示与节点流转，不自动标记 accepted。
 - 2026-10-27 发布后 `ready_for_manual`：按用户“每次发布同步最新、本项目保留修改、发布到服务器验收”的要求完成三次真实发布收敛；前两次发布分别暴露 live 产物挂载点和 runtime-source 镜像层目录不能 rename 的实际容器边界，已用挂载点内切换和源码目录内替换修复并补充回归。最终发布、表单维护任务和六服务验活通过，等待用户浏览器人工验收，不自动标记 accepted。
