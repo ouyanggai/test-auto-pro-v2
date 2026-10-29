@@ -203,7 +203,7 @@ F-012 取代旧的规则目录、ConstraintIR、通用生成器和路径准备�
 - `internal/formdata` 只按目标流程条件返回的真实 JSON 路径处理历史表单数据，保留嵌套对象、数组、子表、虚拟字段、系统字段和无表单页面数据；禁止按标签、中文名、组件类型或页面位置猜测。新增普通必填字段进入人工输入清单，删除字段进入差异摘要。
 - `form-runtime` 是从目标平台复制的运行时，负责 FormMaking、有表单自定义组件和无表单自定义页面的渲染、回显、编辑、校验和数据捕获。测试工具只按其既有协议传入目标表单数据及必要上下文，不新增页面运行时、数据包装或字段绑定规则。
 - 配置侧 `prepareTemplate` 仅以明确的模板显隐与字段权限计算静态隐藏，原生联动继续控制动态隐藏；不得按 `_flow` 等模型后缀推断组件类型或可见性。配置侧适配修复发布后须显式更新并核对持久化 `fr-live` 的实际 HTTP 产物，镜像重建不代表挂载卷已更新；此操作不自动升级配置源码来源，也不改变执行器每次发布重新解析两侧远端 `test` 的规则。
-- `prepareTemplate` 遍历 tableColumns 时携带父表模型路径与有效权限，不把列的裸 model 当作顶层字段。父表可编辑且无显式完整路径列权限时保留列的原 disabled；父表/全表只读优先。列必填单独对齐目标 `setRequireByPermission` 的 `_col` 与 `subFormNoNeedPermission`，不得把缺少列必填权限解释为禁止输入。修复只在本项目适配层，不改共享 FormMaking 库或业务源码。
+- `prepareTemplate` 对 table、subform、group、dialog 统一携带模型命名空间和父级有效权限，不把子字段的裸 model 当作顶层字段。grid、report、inline、card、tabs、collapse 只透传作用域，不把布局 model 加入 allFields/enableData/disabledData；tabs/collapse 的 tabs[].list 也必须遍历。父级可编辑且无显式完整路径子权限时保留原 disabled；父级/全表只读及隐藏优先。只有 table 列必填按目标 `setRequireByPermission` 的 `_col` 与 `subFormNoNeedPermission` 处理，不能外溢到 subform/group/dialog。显隐祖先索引与权限使用相同数据路径，保留布局祖先以识别动态隐藏且隔离同名子字段。修复只在本项目适配层，不改共享 FormMaking 库或业务源码。
 
 ### 条件与路径补丁
 

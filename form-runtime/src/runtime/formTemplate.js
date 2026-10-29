@@ -1,4 +1,6 @@
-const CONTAINER_TYPES = new Set(['grid', 'report', 'table', 'subform', 'inline', 'dialog', 'card', 'group', 'tabs', 'collapse'])
+const DATA_CONTAINER_TYPES = new Set(['table', 'subform', 'group', 'dialog'])
+const LAYOUT_TYPES = new Set(['grid', 'report', 'inline', 'card', 'tabs', 'collapse'])
+const CONTAINER_TYPES = new Set([...DATA_CONTAINER_TYPES, ...LAYOUT_TYPES])
 const STANDARD_TYPES = new Set([
   'input', 'textarea', 'number', 'date', 'time', 'select', 'radio', 'checkbox', 'switch', 'cascader', 'fileupload',
   'text', 'html', 'divider', 'blank', 'link', 'button', 'component', ...CONTAINER_TYPES
@@ -25,6 +27,9 @@ function componentLists (component) {
   const lists = []
   if (Array.isArray(component.list)) lists.push(component.list)
   if (Array.isArray(component.tableColumns)) lists.push(component.tableColumns)
+  for (const tab of Array.isArray(component.tabs) ? component.tabs : []) {
+    if (Array.isArray(tab && tab.list)) lists.push(tab.list)
+  }
   for (const column of Array.isArray(component.columns) ? component.columns : []) {
     if (Array.isArray(column && column.list)) lists.push(column.list)
   }
@@ -78,8 +83,9 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, runtimeCont
   const editableFields = new Set()
 	const hiddenFields = new Set()
 	const requiredEditableFields = new Set()
-  const visit = (list, tableScope = null) => {
+  const visit = (list, scope = null) => {
     for (const component of Array.isArray(list) ? list : []) {
+      if (!component || typeof component !== 'object') continue
       const type = String(component && component.type || '').trim()
       const model = String(component && component.model || '').trim()
       const targetComponentName = componentRuntimeName(component) || (!STANDARD_TYPES.has(type) ? type : '')
@@ -96,23 +102,34 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, runtimeCont
           : {}
         component.options.extendProps = buildComponentExtendProps(targetComponentName, existingProps, runtimeContext)
       }
+      const field = scope ? `${scope.field}.${normalizeFieldPath(model)}` : normalizeFieldPath(model)
+      const explicitPower = permissionByField.get(field)
+      // 原生引擎穿透六类布局查找字段；布局 model 不属于数据路径，也不接受缺省只读投影。
+      // 布局自己的显隐标记仍保留，不能把展示容器当成业务字段锁死内部控件。
+      if (LAYOUT_TYPES.has(type)) {
+        component.options = component.options || {}
+        if (model && (explicitPower === 'hide' || component.hidden === true || component.options.hidden === true || component.options.display === false)) {
+          component.options.hidden = true
+          hiddenFields.add(field)
+        }
+        for (const children of componentLists(component)) visit(children, scope)
+        continue
+      }
       if (model) {
         // 目标页面先禁用整张表单，再只开放流程节点明确授权的字段；缺少权限不能默认可编辑。
-		const field = tableScope ? `${tableScope.field}.${normalizeFieldPath(model)}` : normalizeFieldPath(model)
-        // 子表列不是顶层字段：父表授权后保留模板列状态，只有完整路径权限才覆盖该列。
-        // 父表只读/隐藏不能被子列 edit 放宽，同名顶层字段也不能串用到表格列。
-        const explicitPower = permissionByField.get(field)
-		const power = tableScope ? (tableScope.power === 'edit' ? explicitPower || 'edit' : tableScope.power) : explicitPower || 'only_read'
+        // 四类数据容器共用作用域：未单独授权的子控件继承父权限并保留模板 disabled，
+        // 显式权限只按完整数据路径匹配；父级只读/隐藏不能被子 edit 或同名顶层字段放宽。
+		const power = scope ? (scope.power === 'edit' ? explicitPower || 'edit' : scope.power) : explicitPower || 'only_read'
 		allFields.add(field)
 			// _flow 也用于关联流程选择器，不能按字段后缀猜测用途；显隐只服从目标模板、权限及原生联动。
 		const staticallyHidden = power === 'hide' || component.hidden === true || component.options && (component.options.hidden === true || component.options.display === false)
 			if (staticallyHidden) hiddenFields.add(field)
 			component.options = component.options || {}
 			component.options.hidden = staticallyHidden
-			component.options.disabled = readOnly || power !== 'edit' || Boolean(tableScope && !explicitPower && component.options.disabled)
+			component.options.disabled = readOnly || power !== 'edit' || Boolean(scope && !explicitPower && component.options.disabled)
         if (!component.options.disabled) editableFields.add(field)
         // 对齐目标宿主 setRequireByPermission：_col 只控制列必填，不是列的编辑权限。
-        const columnRequiredAllowed = !tableScope || tableScope.noColumnPermission || permissionByField.get(`${model}_col`) === 'edit'
+        const columnRequiredAllowed = scope?.type !== 'table' || scope.noColumnPermission || permissionByField.get(`${model}_col`) === 'edit'
 			if (component.options.disabled || !columnRequiredAllowed) {
           component.options.required = false
           // 未开放字段必须移除整组运行时校验，目标页面也是先按权限清理规则再 refresh。
@@ -121,11 +138,12 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, runtimeCont
 				requiredEditableFields.add(field)
         }
       }
-      const childScope = type === 'table' && model ? {
-        field: tableScope ? `${tableScope.field}.${normalizeFieldPath(model)}` : normalizeFieldPath(model),
-        power: component.options.disabled ? 'only_read' : 'edit',
+      const childScope = DATA_CONTAINER_TYPES.has(type) && model ? {
+        field,
+        type,
+        power: component.options.hidden ? 'hide' : component.options.disabled ? 'only_read' : 'edit',
         noColumnPermission: String(component.options.customClass || '').includes('subFormNoNeedPermission')
-      } : tableScope
+      } : scope
       for (const children of componentLists(component)) visit(children, childScope)
     }
   }
@@ -152,16 +170,19 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, runtimeCont
 // 判断字段可见性必须沿祖先链回溯，而不是只看字段自身的 hidden 标记。
 export function fieldAncestors (template) {
   const ancestors = new Map()
-  const visit = (list, chain) => {
+  const visit = (list, chain, namespace = '') => {
     for (const component of Array.isArray(list) ? list : []) {
       if (!component || typeof component !== 'object') continue
       const model = String(component.model || '').trim()
-      const next = model ? chain.concat([model]) : chain
-      if (model && !ancestors.has(model)) ancestors.set(model, next)
-      for (const children of componentLists(component)) visit(children, next)
+      const field = namespace ? `${namespace}.${normalizeFieldPath(model)}` : normalizeFieldPath(model)
+      const next = model ? chain.concat([field]) : chain
+      if (model && !ancestors.has(field)) ancestors.set(field, next)
+      // 显隐祖先保留布局键，但只有四种数据容器改变子字段命名空间，与权限投影一致。
+      const childNamespace = DATA_CONTAINER_TYPES.has(component.type) && model ? field : namespace
+      for (const children of componentLists(component)) visit(children, next, childNamespace)
       if (Array.isArray(component.rows)) {
         for (const row of component.rows) {
-          for (const column of Array.isArray(row && row.columns) ? row.columns : []) visit([column], next)
+          for (const column of Array.isArray(row && row.columns) ? row.columns : []) visit([column], next, childNamespace)
         }
       }
     }
