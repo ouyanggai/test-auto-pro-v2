@@ -55,22 +55,19 @@ func TestHandlerMissingDoesNotUsePlanAccountFallback(t *testing.T) {
 	}
 }
 
-// TestPersistedFormVerifyIssueSurvivesDecode 锁定写后核对结论能从落库 JSON 还原。
-func TestPersistedFormVerifyIssueSurvivesDecode(t *testing.T) {
+// TestPersistedBusinessSaveSurvivesDecode 锁定业务保存与真实节点事实能从落库 JSON 还原。
+func TestPersistedBusinessSaveSurvivesDecode(t *testing.T) {
 	encoded := step.EncodeInstanceFacts(step.InstanceFacts{
-		FormDataVerifyIssue:       "字段 reason 发送后未出现在目标实例数据中",
-		FormDataVerifyAt:          "2026-09-14T10:00:00Z",
-		FormDataVerifyFingerprint: "abc",
-		FormDataVerifyResults:     []string{"字段 reason 发送后未出现在目标实例数据中"},
-		BusinessSaveID:            "biz-1",
-		BusinessSaveOtherBiz:      "cost_funds_transactions",
+
+		BusinessSaveID:       "biz-1",
+		BusinessSaveOtherBiz: "cost_funds_transactions",
 	})
 	facts, ok := step.DecodeInstanceFacts(encoded)
 	if !ok {
-		t.Fatal("写后核对结论必须能从落库 JSON 还原")
+		t.Fatal("业务保存事实必须能从落库 JSON 还原")
 	}
-	if facts.FormDataVerifyIssue == "" || facts.BusinessSaveID != "biz-1" {
-		t.Fatalf("持久化核对/业务 id 丢失：%+v", facts)
+	if facts.BusinessSaveID != "biz-1" {
+		t.Fatalf("持久化业务 id 丢失：%+v", facts)
 	}
 }
 

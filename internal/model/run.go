@@ -410,6 +410,9 @@ const (
 // RunControlSource 是人工控制事实的来源。
 type RunControlSource string
 
+// RunControlSourceSystem 表示系统自动门禁或路径偏离触发的停止，不冒充用户操作。
+const RunControlSourceSystem RunControlSource = "system"
+
 const RunControlSourceUI RunControlSource = "ui" // 界面按钮（放行与停止不绑单键快捷键，只接受明确点击）
 
 // RunManualConclusion 已于 2026-09-06 随用户侧对账功能一并移除：

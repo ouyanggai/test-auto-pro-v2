@@ -1,9 +1,4 @@
-// Plan 59 / Run 169 复审 §3.1 回归：系统结构性字段（flowInstanceId）必须从业务表单载荷与
-// runtime 写后正文保护中统一剔除，只保留 target 侧唯一判定入口 IsSystemStructuralField。
-//
-// 背景：ff75a305 只让普通写后核对跳过 flowInstanceId，但实际写载荷仍会把历史 formData 里的
-// flowInstanceId 透传，runtime 正文保护也仍按全部键统计。于是同一份带 flowInstanceId 的表单快照，
-// 目标按实例重写/规范化后回读缺失该键，会被 protectRuntimeFormBody 误判成正文减少而改判 business_failed。
+// 系统标识只在协议顶层绑定；正文载荷剔除历史实例 ID，写后快照按目标原值留证，不添加字段不变性门禁。
 package executor_test
 
 import (
@@ -45,7 +40,7 @@ func TestStructuralFieldDroppedFromInstancePayload(t *testing.T) {
 		"legalOpinion":      "法务已填",
 		"flowInstanceId":    "instance-1",
 	}
-	plan, err := step.BuildNodeFormData(runCtx, approveStep(), instanceCurrent, true, nil)
+	plan, err := step.BuildNodeFormData(runCtx, approveStep(), instanceCurrent, true)
 	if err != nil {
 		t.Fatalf("构造审批表单数据失败：%v", err)
 	}
@@ -68,7 +63,7 @@ func TestStructuralFieldDroppedFromInstancePayload(t *testing.T) {
 // 不得进入新发起载荷，新实例 ID 由目标提交时生成。
 func TestStructuralFieldDroppedFromInitiationPayload(t *testing.T) {
 	runCtx := structuralFieldRunContext(`{"amount":100,"flowInstanceId":"cfg-instance"}`)
-	plan, err := step.BuildNodeFormData(runCtx, submitStep(), nil, false, nil)
+	plan, err := step.BuildNodeFormData(runCtx, submitStep(), nil, false)
 	if err != nil {
 		t.Fatalf("构造发起表单数据失败：%v", err)
 	}
@@ -105,22 +100,22 @@ func TestRuntimeProtectIgnoresStructuralFieldDrop(t *testing.T) {
 	runCtx := newRunContext([]model.CompiledActionStep{approveStep()})
 	runCtx.PathRun.MainInstanceRef = "instance-1"
 	before := map[string]any{"amount": 100, "accountantOpinion": "已办意见", "flowInstanceId": "instance-1"}
-	result := executor.ProtectRuntimeFormBodyForTest(context.Background(), runCtx, approveStep(), target.Session{}, runtimeProtectResult(t, before), 1)
+	result := executor.CaptureRuntimeFormSnapshotForTest(context.Background(), runCtx, approveStep(), target.Session{}, runtimeProtectResult(t, before), 1)
 	if result.Status != "success" {
 		t.Fatalf("结构性字段回读缺失不得改判失败，实际 %q：%s", result.Status, result.Message)
 	}
 }
 
-// TestRuntimeProtectStillCatchesMissingBusinessField 锁定 §3.1 场景③：真实业务字段在写后丢失时
-// 仍必须判 business_failed，证明结构性字段排除没有吞掉真实的业务数据缺失。
-func TestRuntimeProtectStillCatchesMissingBusinessField(t *testing.T) {
+// TestRuntimeSnapshotKeepsTargetFieldRemoval 锁定 §3.1 场景③：真实业务字段在写后丢失时
+// 保留实际快照而不新增字段存在性业务门禁。
+func TestRuntimeSnapshotKeepsTargetFieldRemoval(t *testing.T) {
 	after := map[string]any{"amount": json.Number("100")}
 	executor := runtimeProtectExecutor(after)
 	runCtx := newRunContext([]model.CompiledActionStep{approveStep()})
 	runCtx.PathRun.MainInstanceRef = "instance-1"
 	before := map[string]any{"amount": 100, "accountantOpinion": "已办意见", "flowInstanceId": "instance-1"}
-	result := executor.ProtectRuntimeFormBodyForTest(context.Background(), runCtx, approveStep(), target.Session{}, runtimeProtectResult(t, before), 1)
-	if result.Status != "business_failed" {
-		t.Fatalf("真实业务字段丢失必须判 business_failed，实际 %q", result.Status)
+	result := executor.CaptureRuntimeFormSnapshotForTest(context.Background(), runCtx, approveStep(), target.Session{}, runtimeProtectResult(t, before), 1)
+	if result.Status != "success" {
+		t.Fatalf("目标省略字段不能替代真实动作结果裁决，实际 %q", result.Status)
 	}
 }

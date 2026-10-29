@@ -8,10 +8,12 @@ node --experimental-strip-types --test test/unit/executor-service/native_form_va
 if ($LASTEXITCODE -ne 0) { throw '执行器定向回归失败' }
 go test ./test/contracts/executor-service ./test/contracts/runtimeexec ./test/contracts/form-runtime -count=1
 if ($LASTEXITCODE -ne 0) { throw '执行器与 Go 协议契约失败' }
-go test ./test/unit/backend/run_orchestration -count=1
+go test ./test/unit/backend/form_data_by_node ./test/unit/backend/form_data_derived_fields ./test/unit/backend/assignment ./test/unit/backend/runtimeexec ./test/unit/backend/executor ./test/unit/backend/run_orchestration -count=1
 if ($LASTEXITCODE -ne 0) { throw '步骤来源与运行展示回归失败' }
 # 仅连接临时测试数据库；不运行含真实目标操作的其他集成用例。
 $env:TEST_AUTO_PRO_PLAN_DB_ENV_FILE = Join-Path (Get-Location) '.env.local'
+go test ./test/unit/backend/executor -run '^(TestF052AutomaticGateStopUsesSystemSource|TestF016StopControl|TestF016SingleStepControlLoop)$' -v -count=1
+if ($LASTEXITCODE -ne 0) { throw '自动与人工停止事务回归失败' }
 go test ./test/integration -run '^TestF052LongErrorFinishesRun$' -count=1
 if ($LASTEXITCODE -ne 0) { throw '长错误事务集成验证失败' }
 node --experimental-strip-types --test test/unit/frontend/action_outcome_test.mjs test/unit/frontend/action_detail_structure_test.mjs test/unit/web/action_requests.test.ts

@@ -3,7 +3,6 @@ package form_data_by_node_test
 import (
 	"encoding/json"
 	"reflect"
-	"strings"
 	"testing"
 
 	"test-auto-pro-v2/internal/engine/step"
@@ -13,6 +12,7 @@ import (
 // F-035/T05 分节点表单数据：发起节点只发发起节点可填字段，后续节点字段禁止提前写入；
 // 有实例时以目标实例当前完整数据为基线，只覆盖当前节点可编辑字段并保留其他节点已填值。
 
+// nodeFormRunContext 提供两节点权限与历史配置，供当前基线构造回归使用。
 func nodeFormRunContext() step.RunContext {
 	return step.RunContext{
 		EffectiveFormData: []byte(`{"amount":100,"reason":"发起填写","managerMemo":"审批节点才能填"}`),
@@ -31,7 +31,7 @@ func nodeFormRunContext() step.RunContext {
 func TestSubmitKeepsLaterNodeFieldsWithheld(t *testing.T) {
 	runCtx := nodeFormRunContext()
 	steps := []model.CompiledActionStep{{Sequence: 1, Action: model.ActionSubmit, NodeKey: "start"}}
-	plan, err := step.BuildNodeFormData(runCtx, steps[0], nil, false, nil)
+	plan, err := step.BuildNodeFormData(runCtx, steps[0], nil, false)
 	_ = steps
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestAuditPreservesPreviousNodeValues(t *testing.T) {
 		"amount": float64(100), "reason": "发起填写", "managerMemo": "实例旧值",
 	}
 	compiled := model.CompiledActionStep{Sequence: 2, Action: model.ActionApprove, NodeKey: "audit"}
-	plan, err := step.BuildNodeFormData(runCtx, compiled, instanceCurrent, true, nil)
+	plan, err := step.BuildNodeFormData(runCtx, compiled, instanceCurrent, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestInstanceBaselineNeverFallsBackToInitiation(t *testing.T) {
 	runCtx := nodeFormRunContext()
 	runCtx.EffectiveFormData = []byte(`{"amount":100,"reason":"r"}`)
 	compiled := model.CompiledActionStep{Sequence: 2, Action: model.ActionApprove, NodeKey: "audit"}
-	plan, err := step.BuildNodeFormData(runCtx, compiled, map[string]any{}, true, nil)
+	plan, err := step.BuildNodeFormData(runCtx, compiled, map[string]any{}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +104,7 @@ func TestInstanceBaselineNeverFallsBackToInitiation(t *testing.T) {
 	}
 }
 
+// contains 检查字段决策清单。
 func contains(list []string, want string) bool {
 	for _, item := range list {
 		if item == want {
@@ -117,7 +118,7 @@ func contains(list []string, want string) bool {
 // 每个节点的基线来源、覆盖/保留/扣留字段与最终 JSON 指纹都可追溯，扣留字段绝不出现在载荷。
 func TestNodeFormDataDecisionRecordsOwnership(t *testing.T) {
 	runCtx := nodeFormRunContext()
-	plan, err := step.BuildNodeFormData(runCtx, model.CompiledActionStep{Sequence: 1, Action: model.ActionSubmit, NodeKey: "start"}, nil, false, nil)
+	plan, err := step.BuildNodeFormData(runCtx, model.CompiledActionStep{Sequence: 1, Action: model.ActionSubmit, NodeKey: "start"}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,123 +135,59 @@ func TestNodeFormDataDecisionRecordsOwnership(t *testing.T) {
 	if d.PayloadFingerprint == "" || len(d.PayloadFingerprint) != 64 {
 		t.Fatalf("最终载荷指纹必须是 SHA-256 hex：%q", d.PayloadFingerprint)
 	}
-	if len(d.ValidationIssues) != 0 {
-		t.Fatalf("合法构造不应有校验问题：%v", d.ValidationIssues)
+}
+
+// TestTargetCurrentDataIsAuthoritative 验证目标删除、规范化、联动计算及嵌套修改均以最新实例为准，不建立跨节点不变性门禁。
+func TestTargetCurrentDataIsAuthoritative(t *testing.T) {
+	for _, current := range []map[string]any{
+		{"amount": float64(100)},
+		{"amount": float64(0), "reason": "原生规范值", "currentDepName": "当前部门"},
+		{"detail": []any{map[string]any{"money": float64(999)}}},
+	} {
+		runCtx := nodeFormRunContext()
+		plan, err := step.BuildNodeFormData(runCtx, model.CompiledActionStep{Sequence: 2, Action: model.ActionApprove, NodeKey: "audit"}, current, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(plan.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		for key, value := range current {
+			if !reflect.DeepEqual(payload[key], value) {
+				t.Fatalf("目标当前值必须保留：%s=%v，实际 %v", key, value, payload[key])
+			}
+		}
+		if _, exists := current["reason"]; !exists {
+			if _, restored := payload["reason"]; restored {
+				t.Fatal("不得恢复上游历史字段")
+			}
+		}
+		if !plan.BaseFromInstance || payload["managerMemo"] != "审批节点才能填" {
+			t.Fatalf("必须保留基线与当前授权补丁：%v", payload)
+		}
 	}
 }
 
-// TestCrossNodeLossBlocks 锁定跨节点核对：上一节点覆盖字段在目标实例上丢失时，
-// 当前节点构造必须带校验问题并阻塞，绝不能带着丢值继续写。
-func TestCrossNodeLossBlocks(t *testing.T) {
-	runCtx := nodeFormRunContext()
-	previous := &step.NodeFormDataDecision{
-		StepNo: 1, NodeKey: "start", Action: "submit", BaselineSource: "initiation",
-		OverlaidFields: []string{"reason"}, WithheldFields: []string{"managerMemo"},
-	}
-	// 实例当前数据缺少 reason（上一节点写入的值被目标/他人覆盖或丢失）。
-	instanceCurrent := map[string]any{"amount": float64(100), "managerMemo": "x"}
-	plan, err := step.BuildNodeFormData(runCtx,
-		model.CompiledActionStep{Sequence: 2, Action: model.ActionApprove, NodeKey: "audit"},
-		instanceCurrent, true, previous)
+// TestCNYAmountReadbackOmitsUnusedField 验证本次线上人民币合同场景：目标省略未使用的人民币折算字段时可继续使用当前数据。
+func TestCNYAmountReadbackOmitsUnusedField(t *testing.T) {
+	runCtx := step.RunContext{EffectiveFormData: []byte(`{"currency":"CNY","contractSum":5000004,"contractAmountRmb":null}`),
+		Nodes:              map[string]step.NodeInfo{"start": {EditableFields: []string{"currency", "contractSum", "contractAmountRmb"}}, "audit": {}},
+		NodeEditableFields: map[string][]string{"start": {"currency", "contractSum", "contractAmountRmb"}}}
+	plan, err := step.BuildNodeFormData(runCtx, model.CompiledActionStep{Sequence: 2, Action: model.ActionApprove, NodeKey: "audit"},
+		map[string]any{"currency": "CNY", "contractSum": json.Number("5000004")}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Decision.ValidationIssues) == 0 {
-		t.Fatal("上一节点覆盖字段丢失必须产生校验问题并阻塞")
-	}
-	if !strings.Contains(plan.Decision.ValidationIssues[0], "reason") {
-		t.Fatalf("校验问题必须指明丢失字段：%v", plan.Decision.ValidationIssues)
-	}
-}
-
-// TestCrossNodePreservedPasses 锁定跨节点核对通过路径：上一节点值仍在时无校验问题。
-func TestCrossNodePreservedPasses(t *testing.T) {
-	runCtx := nodeFormRunContext()
-	previous := &step.NodeFormDataDecision{
-		StepNo: 1, NodeKey: "start", Action: "submit", BaselineSource: "initiation",
-		OverlaidFields: []string{"reason", "amount"}, WithheldFields: []string{"managerMemo"},
-	}
-	instanceCurrent := map[string]any{"amount": float64(100), "reason": "发起填写"}
-	plan, err := step.BuildNodeFormData(runCtx,
-		model.CompiledActionStep{Sequence: 2, Action: model.ActionApprove, NodeKey: "audit"},
-		instanceCurrent, true, previous)
-	if err != nil {
+	var payload map[string]any
+	if err := json.Unmarshal(plan.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Decision.ValidationIssues) != 0 {
-		t.Fatalf("上一节点值仍在时不应阻塞：%v", plan.Decision.ValidationIssues)
+	if _, exists := payload["contractAmountRmb"]; exists {
+		t.Fatal("不得按历史快照补回目标省略的字段")
 	}
-	if !plan.BaseFromInstance {
-		t.Fatal("有实例时基线必须来自实例")
-	}
-}
-
-// TestCrossNodeValueRewriteBlocks 锁定 F-035 评审补充：上一节点写入 reason=A，
-// 当前实例已是 reason=B（值被改写）时必须阻塞，不能像旧实现一样只查字段是否存在。
-func TestCrossNodeValueRewriteBlocks(t *testing.T) {
-	runCtx := nodeFormRunContext()
-	previous := &step.NodeFormDataDecision{
-		StepNo: 1, NodeKey: "start", Action: "submit", BaselineSource: "initiation",
-		OverlaidFields: []string{"reason"}, OverlaidValues: map[string]any{"reason": "发起填写"},
-	}
-	instanceCurrent := map[string]any{"amount": float64(100), "reason": "被人改过的值"}
-	plan, err := step.BuildNodeFormData(runCtx,
-		model.CompiledActionStep{Sequence: 2, Action: model.ActionApprove, NodeKey: "audit"},
-		instanceCurrent, true, previous)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plan.Decision.ValidationIssues) == 0 {
-		t.Fatal("上一节点值被改写必须阻塞")
-	}
-	if !strings.Contains(plan.Decision.ValidationIssues[0], "被改写") {
-		t.Fatalf("校验问题必须说明值被改写：%v", plan.Decision.ValidationIssues)
-	}
-}
-
-// TestCrossNodeTargetContextRewriteIgnored 锁定目标会话字段语义：当前处理部门变化时，
-// 不得把 currentDepName 当成上一节点业务值被改写而阻塞后续节点。
-func TestCrossNodeTargetContextRewriteIgnored(t *testing.T) {
-	runCtx := nodeFormRunContext()
-	previous := &step.NodeFormDataDecision{
-		StepNo: 1, NodeKey: "start", Action: "submit", BaselineSource: "initiation",
-		OverlaidFields: []string{"currentDepName"},
-		OverlaidValues: map[string]any{"currentDepName": "综合管理部"},
-	}
-	instanceCurrent := map[string]any{
-		"amount":         float64(100),
-		"reason":         "发起填写",
-		"currentDepName": "建设运营部",
-	}
-	plan, err := step.BuildNodeFormData(runCtx,
-		model.CompiledActionStep{Sequence: 2, Action: model.ActionReject, NodeKey: "audit"},
-		instanceCurrent, true, previous)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plan.Decision.ValidationIssues) != 0 {
-		t.Fatalf("目标会话字段变化不应阻塞：%v", plan.Decision.ValidationIssues)
-	}
-}
-
-// TestCrossNodeNestedValueRewriteBlocks 锁定嵌套对象/表格字段的深度比较。
-func TestCrossNodeNestedValueRewriteBlocks(t *testing.T) {
-	runCtx := nodeFormRunContext()
-	previous := &step.NodeFormDataDecision{
-		StepNo: 1, NodeKey: "start", Action: "submit", BaselineSource: "initiation",
-		OverlaidFields: []string{"detail"}, OverlaidValues: map[string]any{
-			"detail": []any{map[string]any{"name": "甲", "money": float64(1)}},
-		},
-	}
-	instanceCurrent := map[string]any{"detail": []any{map[string]any{"name": "甲", "money": float64(999)}}}
-	plan, err := step.BuildNodeFormData(runCtx,
-		model.CompiledActionStep{Sequence: 2, Action: model.ActionApprove, NodeKey: "audit"},
-		instanceCurrent, true, previous)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plan.Decision.ValidationIssues) == 0 {
-		t.Fatal("嵌套字段值被改写必须阻塞（深度比较）")
+	if payload["currency"] != "CNY" || payload["contractSum"] != float64(5000004) {
+		t.Fatalf("目标人民币合同值改变：%v", payload)
 	}
 }
 
@@ -272,7 +209,7 @@ func TestAlignSubformColumnControlFields(t *testing.T) {
 		},
 	}
 	steps := []model.CompiledActionStep{{Sequence: 1, Action: model.ActionSubmit, NodeKey: "start"}}
-	plan, err := step.BuildNodeFormData(runCtx, steps[0], nil, false, nil)
+	plan, err := step.BuildNodeFormData(runCtx, steps[0], nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

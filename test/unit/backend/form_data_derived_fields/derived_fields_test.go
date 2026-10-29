@@ -2,7 +2,6 @@ package form_data_derived_fields_test
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -43,6 +42,7 @@ func TestDerivedFieldClearedByTool(t *testing.T) {
 	}
 }
 
+// TestCrossNodeDerivedOpinionDoesNotBlock 验证普通审批保留目标当前生成的审核意见。
 func TestCrossNodeDerivedOpinionDoesNotBlock(t *testing.T) {
 	runCtx := step.RunContext{
 		EffectiveFormData: []byte(`{"reason":"发起填写","auto_audit_info_1":""}`),
@@ -55,43 +55,38 @@ func TestCrossNodeDerivedOpinionDoesNotBlock(t *testing.T) {
 			"audit": {"managerMemo"},
 		},
 	}
-	previous := &step.NodeFormDataDecision{
-		OverlaidFields: []string{"reason", "auto_audit_info_1"},
-		OverlaidValues: map[string]any{"reason": "发起填写", "auto_audit_info_1": ""},
-	}
 	plan, err := step.BuildNodeFormData(runCtx, model.CompiledActionStep{Sequence: 2, Action: model.ActionApprove, NodeKey: "audit"}, map[string]any{
 		"reason":                "发起填写",
 		"auto_audit_info_1":     "刘志阳 同意 2026-09-14 15:19",
 		"auto_audit_info_obj_1": map[string]any{"auditName": "刘志阳"},
-	}, true, previous)
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Decision.ValidationIssues) != 0 {
-		t.Fatalf("目标生成审批意见不得阻塞：%v", plan.Decision.ValidationIssues)
+	var payload map[string]any
+	if err := json.Unmarshal(plan.Payload, &payload); err != nil {
+		t.Fatal(err)
 	}
+	if payload["auto_audit_info_1"] != "刘志阳 同意 2026-09-14 15:19" {
+		t.Fatalf("不得用历史空值覆盖当前意见：%v", payload)
+	}
+
 }
 
-func TestToolClearingDerivedOpinionBlocks(t *testing.T) {
-	previous := &step.NodeFormDataDecision{
-		OverlaidFields: []string{"auto_audit_info_1"},
-		OverlaidValues: map[string]any{"auto_audit_info_1": "刘志阳 同意 2026-09-14 15:19"},
-	}
-	runCtx := step.RunContext{
-		EffectiveFormData: []byte(`{"auto_audit_info_1":""}`),
-		Nodes:             map[string]step.NodeInfo{"audit": {}},
-	}
-	plan, err := step.BuildNodeFormData(runCtx, model.CompiledActionStep{Sequence: 3, Action: model.ActionApprove, NodeKey: "audit"}, map[string]any{
-		"auto_audit_info_1": "",
-	}, true, previous)
+// TestCurrentEmptyOpinionIsNotReplaced 验证目标当前空意见不会被历史意见复原，也不会按历史值阻塞。
+func TestCurrentEmptyOpinionIsNotReplaced(t *testing.T) {
+	runCtx := step.RunContext{EffectiveFormData: []byte(`{"auto_audit_info_1":"历史非空意见"}`), Nodes: map[string]step.NodeInfo{"audit": {}}}
+	plan, err := step.BuildNodeFormData(runCtx, model.CompiledActionStep{Sequence: 3, Action: model.ActionApprove, NodeKey: "audit"}, map[string]any{"auto_audit_info_1": ""}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined := strings.Join(plan.Decision.ValidationIssues, "；")
-	if !strings.Contains(joined, "被工具写空") {
-		t.Fatalf("工具写空目标非空意见必须阻塞：%s", joined)
+	var payload map[string]any
+	if err := json.Unmarshal(plan.Payload, &payload); err != nil {
+		t.Fatal(err)
 	}
-	_ = json.RawMessage(nil)
+	if payload["auto_audit_info_1"] != "" {
+		t.Fatalf("必须保留目标当前意见：%v", payload)
+	}
 }
 
 // TestResubmitResetsApprovalOpinionFamilies 锁定重新发起的业务语义：审核意见及已返回的伴生结构必须显式清空，
@@ -102,10 +97,6 @@ func TestResubmitResetsApprovalOpinionFamilies(t *testing.T) {
 		Nodes:              map[string]step.NodeInfo{"start": {EditableFields: []string{"reason"}}},
 		NodeEditableFields: map[string][]string{"start": {"reason"}},
 	}
-	previous := &step.NodeFormDataDecision{
-		OverlaidFields: []string{"auto_audit_info_1"},
-		OverlaidValues: map[string]any{"auto_audit_info_1": "上一轮审批意见"},
-	}
 	plan, err := step.BuildNodeFormData(runCtx, model.CompiledActionStep{
 		Sequence: 4, Action: model.ActionResubmit, NodeKey: "start",
 	}, map[string]any{
@@ -114,12 +105,9 @@ func TestResubmitResetsApprovalOpinionFamilies(t *testing.T) {
 		"auto_audit_info_obj_1":      map[string]any{"auditName": "审批人"},
 		"auto_audit_info_obj_list_1": []any{map[string]any{"opinion": "同意"}},
 		"auto_audit_info_2":          "另一条意见",
-	}, true, previous)
+	}, true)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(plan.Decision.ValidationIssues) != 0 {
-		t.Fatalf("重新发起清空审核意见不应被旧保护规则阻塞：%v", plan.Decision.ValidationIssues)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(plan.Payload, &payload); err != nil {

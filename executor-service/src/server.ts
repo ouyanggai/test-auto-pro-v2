@@ -48,7 +48,7 @@ interface RuntimeSession {
   loadMode: string
   instanceId: string
   formValidationError?: string
-  expectedFormValues: Record<string, unknown>
+  requiresFormApi: boolean
   formBefore: Record<string, unknown>
   baseline: ExecutionBaselineRecorder
 }
@@ -818,7 +818,7 @@ async function main (): Promise<void> {
           nativeHost: null,
           loadMode: '',
           instanceId: '',
-          expectedFormValues: {},
+          requiresFormApi: false,
           formBefore: {},
           baseline
         })
@@ -1113,7 +1113,7 @@ async function main (): Promise<void> {
           const changed = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : []
           const readonly = Array.isArray(payload.readonlyFields) ? payload.readonlyFields.map(String) : []
           const allowed = [...new Set([...changed, ...readonly])]
-          session.expectedFormValues = {}
+          session.requiresFormApi = allowed.length > 0
           let patchReadback: Record<string, unknown> = {}
           if (allowed.length > 0) {
             // 表单宿主是异步渲染的（发起链 Steps1 监听 flowJson 自动 nextStep，
@@ -1145,8 +1145,7 @@ async function main (): Promise<void> {
               throw new UnsupportedFormError('补丁应用时表单数据接口不可用')
             }
             patchReadback = hydrated.values
-            session.expectedFormValues = hydrated.expected
-            // 原生刷新后等待联动与远程请求收敛；不再按空值补丁覆盖一次，避免把搬移后的非空错误值放行。
+            // 原生刷新后等待联动与远程请求收敛，不再用额外补丁覆盖目标计算值。
             loadStage = session.baseline.begin('existing_options_wait_after_patch')
             await waitForOptionsReady(session.route.trace, 600)
             session.baseline.end(loadStage, 'returned')
@@ -1165,25 +1164,21 @@ async function main (): Promise<void> {
             if (identityReadback !== null) patchReadback = identityReadback
           }
 
-          // 身份探针中的请求和回调也必须结束，再核对实际写入意图；偏离即阻塞，不能伪报 ready。
+          // 等原生联动结束后记录实际快照，不要求目标计算值与补丁逐字段相等。
           await waitForOptionsReady(session.route.trace, 600)
-          loadStage = session.baseline.begin('form_values_verification')
-          const verified = Object.keys(session.expectedFormValues).length > 0
-            ? await session.page.evaluate(synchronizeNativeForm, { phase: 'verify' as const, expected: session.expectedFormValues })
+          loadStage = session.baseline.begin('form_values_snapshot')
+          const snapshot = session.requiresFormApi
+            ? await session.page.evaluate(synchronizeNativeForm, { phase: 'snapshot' as const })
             : null
-          if (verified === null && allowed.length > 0) throw new UnsupportedFormError('表单值核对时数据接口不可用')
-          if (verified) {
-            patchReadback = verified.values
-            session.expectedFormValues = verified.expected
+          if (snapshot === null && allowed.length > 0) throw new UnsupportedFormError('表单快照读取时数据接口不可用')
+          if (snapshot) {
+            patchReadback = snapshot.values
           }
           session.baseline.end(loadStage, 'returned')
 
           loadStage = session.baseline.begin('existing_form_snapshot_before')
           session.formBefore = await readNativeFormSnapshot(session.page)
           session.baseline.end(loadStage, 'returned', { boundary: 'existing_snapshot_returned' })
-          if (mode !== 'initiate' && mode !== 'forward' && Object.keys(session.formBefore).length === 0) {
-            throw new UnsupportedFormError('实例表单正文尚未加载，拒绝让空表单进入写动作')
-          }
 
           session.loaded = true
           session.identity = {
@@ -1306,13 +1301,13 @@ async function main (): Promise<void> {
             session.baseline.end(actionStage, 'returned')
             let dispatchFacts: { component: string, method: string } | null = null
             if (!readOnly) {
-              // 点击前再读一次，防止 ready 之后的异步回调改错数据；这里只检查，不修正文或绕过目标校验。
+              // 点击前保留实际表单证据；原生联动和校验照常运行，不修正文或增加值相等判断。
               actionStage = session.baseline.begin('form_values_before_dispatch')
-              const verified = Object.keys(session.expectedFormValues).length > 0
-                ? await session.page.evaluate(synchronizeNativeForm, { phase: 'verify' as const, expected: session.expectedFormValues })
+              const snapshot = session.requiresFormApi
+                ? await session.page.evaluate(synchronizeNativeForm, { phase: 'snapshot' as const })
                 : null
-              if (verified === null && Object.keys(session.expectedFormValues).length > 0) throw new UnsupportedFormError('动作前表单数据接口不可用')
-              if (verified) session.formBefore = verified.values
+              if (snapshot === null && session.requiresFormApi) throw new UnsupportedFormError('动作前表单数据接口不可用')
+              if (snapshot) session.formBefore = snapshot.values
               session.baseline.end(actionStage, 'returned')
               const payload = (envelope.payload ?? {}) as { auditDesc?: string, loadMode?: string, nextNodeAuditors?: DispatchInput['nextNodeAuditors'] }
               actionStage = session.baseline.begin('native_dispatch_evaluate')

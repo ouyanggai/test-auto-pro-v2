@@ -472,8 +472,8 @@ func TestResubmitLoadCarriesPublishedFlowProxy(t *testing.T) {
 	}
 }
 
-// TestRuntimeApprovalRejectsShrunkFormBody 审批写后字段数少于页面写前快照时必须改判业务失败。
-func TestRuntimeApprovalRejectsShrunkFormBody(t *testing.T) {
+// TestRuntimeApprovalRecordsShrunkFormBody 审批写后保留目标快照，不把字段减少冒充原生业务失败。
+func TestRuntimeApprovalRecordsShrunkFormBody(t *testing.T) {
 	view := &recordingTarget{taskID: "task-1", formData: map[string]any{"kept": 1}}
 	runner := &fakeRuntimeRunner{status: "success", summary: json.RawMessage(`{"fieldCountBefore":3,"formBefore":{"kept":1,"lostA":2,"lostB":3}}`)}
 	executor := newExecutorForRouting(t, view, runner)
@@ -484,8 +484,8 @@ func TestRuntimeApprovalRejectsShrunkFormBody(t *testing.T) {
 	if !preview.WriteSent() {
 		t.Fatalf("runtime 已发出审批写时必须保留写出事实")
 	}
-	if preview.WriteErrForTest() == nil || !strings.Contains(preview.WriteErrForTest().Error(), "字段明显减少") {
-		t.Fatalf("表单正文减少必须改判业务失败：%v", preview.WriteErrForTest())
+	if preview.WriteErrForTest() != nil {
+		t.Fatalf("目标字段减少不得自行改判业务失败：%v", preview.WriteErrForTest())
 	}
 }
 

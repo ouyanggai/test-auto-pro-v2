@@ -85,7 +85,7 @@ for (const currency of ['CNY', 'GBP', 'USD']) test(`初始化 ${currency} 及重
     const patch = { currency, amount: 5000001, localAmount: 600, method: '直签' }
     for (let count = 0; count < 3; count++) {
       const result = await execute(fixture.form, { phase: 'hydrate', patch, keys: Object.keys(patch) })
-      const verified = await execute(fixture.form, { phase: 'verify', expected: result.expected })
+      const verified = await execute(fixture.form, { phase: 'snapshot' })
       assert.equal(verified.values.amount, 5000001)
       assert.equal(verified.values.localAmount, 600)
       assert.equal(verified.values.method, '直签')
@@ -107,7 +107,7 @@ test('旧的逐项 setData 路径能复现金额搬移，新初始化回填可�
     assert.equal(fixture.form.models.amount, 0)
     assert.equal(fixture.form.models.localAmount, 5000001)
     const result = await execute(fixture.form, { phase: 'hydrate', patch, keys: Object.keys(patch) })
-    await execute(fixture.form, { phase: 'verify', expected: result.expected })
+    await execute(fixture.form, { phase: 'snapshot' })
     assert.equal(result.values.amount, 5000001)
     assert.equal(result.values.localAmount, 600)
   } finally { fixture.dispose() }
@@ -118,7 +118,7 @@ test('允许字段、人员伴生键和当前用户保护保持；没有授权�
   const form = { getValues: () => clone(values), setData: patch => { Object.assign(values, patch) } }
   const result = await execute(form, { phase: 'hydrate', identity: { userId: 'operator', companyId: 'company' },
     keys: ['user', 'name', 'receiver'], patch: { user: '{"id":"old"}', name: '说明', receiver: '接收人', receiver__formPersonId: 'receiver-id', forbidden: '禁止写入' } })
-  await execute(form, { phase: 'verify', expected: result.expected })
+  await execute(form, { phase: 'snapshot' })
   assert.equal(values.user, '{"id":"operator","name":"当前用户"}')
   assert.equal(values.receiver__formPersonId, 'receiver-id')
   assert.equal(values.forbidden, undefined)
@@ -130,7 +130,7 @@ test('原生重建保留虚拟名、只读人员伴生键和未建模正文，�
     await fixture.form.refresh()
     const patch = { currency: 'GBP', currency__virtualName: '英镑', user__formPersonId: 'operator', metadata: { source: '原生正文' } }
     const result = await execute(fixture.form, { phase: 'hydrate', patch, keys: ['currency', 'user__formPersonId', 'metadata'] })
-    await execute(fixture.form, { phase: 'verify', expected: result.expected })
+    await execute(fixture.form, { phase: 'snapshot' })
     assert.equal(result.values.currency__virtualName, '英镑')
     assert.equal(result.values.user__formPersonId, 'operator')
     assert.deepEqual(clone(result.values.metadata), { source: '原生正文' })
@@ -163,24 +163,35 @@ test('重建保持宿主业务选项及节点禁用权限，新初始化的条�
   } finally { fixture.dispose() }
 })
 
-test('0、false、空串、空数组及非空默认值都不能在核对中被当成正确值放行', async () => {
-  for (const [expected, actual] of [[12, 0], [false, true], ['', '默认'], [[], ['默认']], ['直签', '公开招标'], [null, 0]]) {
-    const form = { getValues: () => ({ value: actual }), setData() {} }
-    await assert.rejects(() => execute(form, { phase: 'verify', expected: { value: expected } }), /表单值已偏离路径配置.*value/)
+test('原生清空、规范化和计算结果按实际快照记录，不新增相等判断或改写值', async () => {
+  for (const actual of [0, false, '', [], null, '原生规范值', { id: '目标记录' }]) {
+    const form = { getValues: () => ({ value: actual }), setData() { throw new Error('快照不能写表单') } }
+    const snapshot = await execute(form, { phase: 'snapshot' })
+    assert.deepEqual(clone(snapshot.values.value), actual)
   }
 })
 
-test('异步联动改错或装载后改错会阻断；核对只读且保留额外派生字段', async () => {
+test('异步联动后的实际数据只读保留，包含额外派生字段且不再固定初始值', async () => {
   const fixture = createNativeForm()
   try {
     await fixture.form.refresh()
-    const result = await execute(fixture.form, { phase: 'hydrate', patch: { amount: 25 }, keys: ['amount'] })
+    await execute(fixture.form, { phase: 'hydrate', patch: { amount: 25 }, keys: ['amount'] })
     fixture.form.models.extraDerived = '原生派生'
-    await execute(fixture.form, { phase: 'verify', expected: result.expected })
     fixture.form.models.amount = 0
-    await assert.rejects(() => execute(fixture.form, { phase: 'verify', expected: result.expected }), /外币金额.*预期 25，实际 0/)
+    const snapshot = await execute(fixture.form, { phase: 'snapshot' })
+    assert.equal(snapshot.values.amount, 0)
+    assert.equal(snapshot.values.extraDerived, '原生派生')
     assert.equal(fixture.form.models.amount, 0)
   } finally { fixture.dispose() }
+})
+
+test('表单接口缺失、读取错误和 setter 异常仍明确暴露，空对象不是工具自定义业务错误', async () => {
+  assert.equal(await execute({}, { phase: 'snapshot' }), null)
+  const empty = { getValues: () => ({}), setData() {} }
+  assert.deepEqual(clone((await execute(empty, { phase: 'snapshot' })).values), {})
+  await assert.rejects(() => execute({ getValues() { throw new Error('原生读取失败') }, setData() {} }, { phase: 'snapshot' }), /原生读取失败/)
+  await assert.rejects(() => execute({ getValues: () => [], setData() {} }, { phase: 'snapshot' }), /回读结果不是对象/)
+  await assert.rejects(() => execute({ getValues: () => ({}), setData() { throw new Error('原生设置失败') } }, { phase: 'hydrate', keys: ['value'], patch: { value: 1 } }), /原生设置失败/)
 })
 
 test('清理已经销毁且不再挂载的旧容器，同时保留合法的多个活实例', async () => {
@@ -199,7 +210,7 @@ test('嵌套子表的点路径按原生逐行语义回填，且不限制未输�
   let values = { rows: [{ amount: 1 }, { amount: 2 }] }
   const form = { getValues: () => clone(values), setData(patch) { values.rows.forEach(row => { row.amount = patch['rows.amount']; row.derived = '计算值' }) } }
   const result = await execute(form, { phase: 'hydrate', patch: { 'rows.amount': 30 }, keys: ['rows.amount'] })
-  await execute(form, { phase: 'verify', expected: result.expected })
+  await execute(form, { phase: 'snapshot' })
   assert.deepEqual(values.rows.map(row => row.amount), [30, 30])
 })
 
@@ -208,7 +219,7 @@ test('明确输入的零值、false 和清空意图保留；不存在的嵌套�
   const form = { getValues: () => clone(values), setData: patch => { Object.assign(values, patch) } }
   const patch = { amount: 0, enabled: false, note: '', empty: null, rows: [] }
   const result = await execute(form, { phase: 'hydrate', patch, keys: Object.keys(patch) })
-  await execute(form, { phase: 'verify', expected: result.expected })
+  await execute(form, { phase: 'snapshot' })
   assert.deepEqual(clone(result.values), patch)
   await assert.rejects(() => execute(form, { phase: 'hydrate', patch: { 'missing.amount': 1 }, keys: ['missing.amount'] }), /字段路径不存在/)
 })
@@ -237,50 +248,23 @@ test('原生 URL 初始化保留完整身份，避免仅 companyId 导致 SID �
   assert.equal(storage.get('invest-power-system-userName'), '欧阳改')
 })
 
-test('实际服务装载后及分发前都调用只读核对；旧空值恢复链已移除', () => {
+test('实际服务装载后及分发前保留只读快照，字段不变性状态和旧恢复链均已删除', () => {
   const service = fs.readFileSync(new URL('../../../executor-service/src/server.ts', import.meta.url), 'utf8')
-  assert.ok(service.includes("session.page.evaluate(synchronizeNativeForm, { phase: 'verify' as const"))
-  assert.ok(service.includes('session.expectedFormValues = verified.expected'))
+  assert.equal((service.match(/session.page.evaluate\(synchronizeNativeForm, \{ phase: 'snapshot' as const/g) || []).length, 2)
+  assert.ok(!service.includes('expectedFormValues'))
+  assert.ok(service.includes('session.requiresFormApi = allowed.length > 0'))
   assert.ok(service.indexOf("begin('form_values_before_dispatch')") < service.indexOf("begin('native_dispatch_evaluate')"))
   assert.ok(!service.includes('restoreIntendedPatchViaPage'))
   assert.equal((service.match(/const params = nativeAuthQuery\(payload\)/g) || []).length, 3)
 })
 
-for (const flowType of ['single_source_delegation', 'proposed_supplier_review', 'another_flow_type']) test(`审批空关联可规范为控件配置并固定 ${flowType}，核对阶段不写表单`, async () => {
-  let actual: unknown = JSON.stringify({ flowType })
-  const form = {
-    formData: { list: [{ type: 'custom', el: 'general-list-select-show', model: 'arbitraryRelatedFlow', name: '关联流程' }] },
-    getValues: () => ({ arbitraryRelatedFlow: actual }),
-    setData: () => { throw new Error('核对不能写表单') }
-  }
-  const input = { phase: 'verify' as const, expected: { arbitraryRelatedFlow: [] } }
-  const verified = await execute(form, input)
-  assert.deepEqual(clone(input.expected), { arbitraryRelatedFlow: [] })
-  assert.equal(verified.expected.arbitraryRelatedFlow, actual)
-  await execute(form, { phase: 'verify', expected: verified.expected })
-  for (const changed of [JSON.stringify({ flowType: 'changed' }), JSON.stringify({ flowType, id: 'selected', name: '已选流程' }), []]) {
-    actual = changed
-    await assert.rejects(() => execute(form, { phase: 'verify', expected: verified.expected }), /偏离路径配置/)
-  }
-})
-
-test('空关联规范化不能放行已选记录、非法配置、其他控件或普通值偏离', async () => {
-  const cases = [
-    { expected: [], actual: '{"flowType":"test","id":"selected"}' },
-    { expected: [], actual: '{"flowType":""}' },
-    { expected: [], actual: '{"flowType":1}' },
-    { expected: [], actual: '{invalid}' },
-    { expected: [], actual: { flowType: 'test' } },
-    { expected: [{ id: 'selected' }], actual: '{"flowType":"test"}' },
-    { expected: '{"flowType":"test","id":"selected"}', actual: '{"flowType":"test"}' },
-    { expected: [], actual: '{"flowType":"test"}', el: 'another-control' },
-    { expected: 600, actual: 5000001 },
-    { expected: '直签', actual: '公开招标' }
-  ]
-  for (const item of cases) {
-    const form = { formData: { list: [{ type: 'custom', el: item.el || 'general-list-select-show', model: 'value' }] },
-      getValues: () => ({ value: item.actual }), setData() {} }
-    await assert.rejects(() => execute(form, { phase: 'verify', expected: { value: item.expected } }), /偏离路径配置/)
+test('关联控件不再特殊规范化或锁定值，快照原样记录目标选择与配置', async () => {
+  for (const actual of [[], '{"flowType":"test"}', '{"flowType":"test","id":"selected"}', [{ id: 'selected' }]]) {
+    const form = { formData: { list: [{ type: 'custom', el: 'general-list-select-show', model: 'flow' }] },
+      getValues: () => ({ flow: actual }), setData() { throw new Error('快照不能写表单') } }
+    const result = await execute(form, { phase: 'snapshot' })
+    assert.deepEqual(clone(result.values.flow), actual)
+    assert.equal('expected' in result, false)
   }
 })
 

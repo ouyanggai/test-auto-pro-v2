@@ -6,20 +6,18 @@ interface NativeNode extends Values {
 }
 
 export interface NativeFormInput {
-  phase: 'hydrate' | 'verify'
+  phase: 'hydrate' | 'snapshot'
   patch?: Values
   keys?: string[]
   identity?: { userId: string, companyId: string }
-  expected?: Values
 }
 
 export interface NativeFormValues {
   values: Values
-  expected: Values
 }
 
 // synchronizeNativeForm 是实际 page.evaluate 执行的自包含函数；只处理已授权字段，不改目标模板、请求正文或节点权限。
-// 装载使用原生初始化语义，核对阶段只读；未知偏离必须阻断，不能把非空默认值或被联动搬移的金额当成正确结果。
+// 装载使用原生初始化语义，快照阶段只读；联动产生的规范值由目标业务处理，不另设值相等门禁。
 export async function synchronizeNativeForm (input: NativeFormInput): Promise<NativeFormValues | null> {
   const native = (window as unknown as { __executorNative?: { initFlow?: NativeNode, flowDetail?: NativeNode, forwardList?: NativeNode } }).__executorNative
   const container = native?.initFlow || native?.flowDetail || native?.forwardList
@@ -61,45 +59,7 @@ export async function synchronizeNativeForm (input: NativeFormInput): Promise<Na
   }
   const current = await getter.call(form)
   if (!current || typeof current !== 'object' || Array.isArray(current)) throw new Error('表单 getValues 回读结果不是对象')
-  const matches = (expected: unknown, actual: unknown): boolean => {
-    if (Array.isArray(expected)) return Array.isArray(actual) && expected.length === actual.length && expected.every((item, index) => matches(item, actual[index]))
-    if (expected && typeof expected === 'object') return !!actual && typeof actual === 'object' && !Array.isArray(actual) && Object.keys(expected).every(key => matches((expected as Values)[key], (actual as Values)[key]))
-    return Object.is(expected, actual)
-  }
-  if (input.phase === 'verify') {
-    const expected = clone(input.expected || {})
-    const fields = new Map<string, Values>()
-    const visit = (node: unknown): void => {
-      if (!node || typeof node !== 'object') return
-      const item = node as Values
-      if (typeof item.model === 'string') fields.set(item.model, item)
-      for (const child of Object.values(item)) if (child && typeof child === 'object') visit(child)
-    }
-    visit(form.formData)
-    const changed: string[] = []
-    for (const key of Object.keys(expected)) {
-      const actual = read(current, key.split('.'))
-      if (matches(expected[key], actual)) continue
-      const field = fields.get(key)
-      // 目标通用关联控件用 JSON 字符串同时携带配置与选择结果；审批 refresh 会把 [] 补为仅含 flowType 的空选择配置。
-      // 只接受这个控件的配置补齐，不接受新增/丢失选中 ID、非空数组或其他字段的类型变化，也不按业务字段名放行。
-      if (field?.type === 'custom' && field.el === 'general-list-select-show' && Array.isArray(expected[key]) && (expected[key] as unknown[]).length === 0 && typeof actual === 'string') {
-        let config: Values | null = null
-        try { config = JSON.parse(actual) as Values } catch {}
-        if (config && !Array.isArray(config) && Object.keys(config).length === 1 && typeof config.flowType === 'string' && config.flowType.trim() !== '') {
-          // 接受原生规范值后将它固定下来；动作前不得再次变成别的流程类型或选中别的流程。
-          expected[key] = actual
-          continue
-        }
-      }
-      changed.push(key)
-    }
-    if (changed.length) {
-      const detail = changed.map(key => `${fields.get(key)?.name || key}（${key}）：预期 ${JSON.stringify(expected[key])}，实际 ${JSON.stringify(read(current, key.split('.')))}`).join('；')
-      throw new Error(`表单值已偏离路径配置，拒绝执行：${detail}`)
-    }
-    return { values: current, expected }
-  }
+  if (input.phase === 'snapshot') return { values: clone(current) }
 
   const patch = input.patch || {}
   const ids = [input.identity?.userId, input.identity?.companyId].filter((id): id is string => !!id)
@@ -115,8 +75,6 @@ export async function synchronizeNativeForm (input: NativeFormInput): Promise<Na
   }
   const desired = clone(current)
   for (const [key, value] of Object.entries(picked)) write(desired, key.split('.'), value)
-  const expected: Values = {}
-  for (const key of Object.keys(picked)) expected[key] = clone(read(desired, key.split('.')))
 
   if (form.formData && 'formValue' in form && typeof form.refresh === 'function') {
     // 宿主会在装载后通过 setOptions/disabled 注入业务上下文与节点权限；刷新不能把这些运行时选项退回模板默认值。
@@ -205,5 +163,5 @@ export async function synchronizeNativeForm (input: NativeFormInput): Promise<Na
     const setter = (form.setData || form.setValues || form.setFormData) as (values: Values) => unknown
     await setter.call(form, clone(picked))
   }
-  return { values: await getter.call(form), expected }
+  return { values: await getter.call(form) }
 }

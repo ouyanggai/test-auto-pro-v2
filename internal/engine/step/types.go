@@ -156,10 +156,6 @@ type RunContext struct {
 	// 零值不等于"写之前实例不存在"：把丢失的基准当成确定事实用，会让对账把审批类写的
 	// 实例状态维度说成"写之前实例不存在、现在存在"，凭空造出一条与事实相反的依据。
 	LastBeforeFactsKnown bool
-	// LastFormDataDecision 是上一次携带表单数据的写请求的节点决策（F-035/T05）：
-	// 由控制现场在放行后从预览填入。下一节点构造表单数据时必须重新读取目标实例，
-	// 并核对上一节点覆盖字段的值仍在；发现丢失或被覆盖立即阻塞，绝不用历史快照继续。
-	LastFormDataDecision *NodeFormDataDecision
 	// EffectiveFormData 是路径生效表单数据的原始 JSON 文本。
 	// 以 json.Number 解码后再序列化，数字字面量保持原样（原生 JSON 列会改写数字的教训见迁移 023）。
 	EffectiveFormData []byte
@@ -199,15 +195,6 @@ type InstanceFacts struct {
 	// 有界轮询结束后仍缺失时，门禁必须显示"目标节点未生成处理人"，不得显示"当前待办已经处理"。
 	HandlerGenerationRead bool `json:"handlerGenerationRead,omitempty"`
 	HandlerMissing        bool `json:"handlerMissing,omitempty"`
-	// FormDataVerifyIssue 是写后表单数据逐字段核对的中文结论（F-035 评审补充）；
-	// 非空表示本次写请求的表单副作用与目标实例不一致，下一步门禁据此阻塞。
-	FormDataVerifyIssue string `json:"formDataVerifyIssue,omitempty"`
-	// FormDataVerifyAt 是写后核对完成时间（UTC RFC3339）；供重启后恢复阻塞结论。
-	FormDataVerifyAt string `json:"formDataVerifyAt,omitempty"`
-	// FormDataVerifyFingerprint 是本次决策载荷指纹，下一步按它确认核对对象。
-	FormDataVerifyFingerprint string `json:"formDataVerifyFingerprint,omitempty"`
-	// FormDataVerifyResults 是字段级核对原文，日志与详情共用。
-	FormDataVerifyResults []string `json:"formDataVerifyResults,omitempty"`
 	// CreatorRead 表示本次实例读取已经核对创建人；没有该事实时不能把当前账号冒充创建人。
 	CreatorRead bool `json:"creatorRead,omitempty"`
 	// IsInitiator 表示当前会话账号是否为目标实例创建人。
@@ -395,17 +382,11 @@ func DecodeInstanceFacts(raw string) (InstanceFacts, bool) {
 	return facts, true
 }
 
-// mergeVerifyIssue 把写后核对结论并入落库 JSON，供下一步和重启恢复读取。
-func mergeVerifyIssue(before, after InstanceFacts) InstanceFacts {
+// mergeAfterFacts 把真实写后节点、代理和业务保存事实并入落库 JSON，供对账与恢复读取。
+func mergeAfterFacts(before, after InstanceFacts) InstanceFacts {
 	merged := before
 	merged.AfterCurrentNodes = append([]string(nil), after.CurrentNodes...)
 	merged.AfterFlowProxyID = strings.TrimSpace(after.FlowProxyID)
-	merged.FormDataVerifyIssue = strings.TrimSpace(after.FormDataVerifyIssue)
-	merged.FormDataVerifyAt = strings.TrimSpace(after.FormDataVerifyAt)
-	merged.FormDataVerifyFingerprint = strings.TrimSpace(after.FormDataVerifyFingerprint)
-	if len(after.FormDataVerifyResults) > 0 {
-		merged.FormDataVerifyResults = append([]string(nil), after.FormDataVerifyResults...)
-	}
 	if id := strings.TrimSpace(after.BusinessSaveID); id != "" {
 		merged.BusinessSaveID = id
 		merged.BusinessSaveOtherBiz = strings.TrimSpace(after.BusinessSaveOtherBiz)
@@ -414,26 +395,6 @@ func mergeVerifyIssue(before, after InstanceFacts) InstanceFacts {
 		merged.BizRelevance = append([]target.BizRelevance(nil), after.BizRelevance...)
 	}
 	return merged
-}
-
-// loadPersistedFormDataVerifyIssue 按 pathRunId 读取上一节点已落账的核对结论。
-func loadPersistedFormDataVerifyIssue(store RunFactsStore, pathRunID uint64, currentStepNo int) string {
-	reader, ok := store.(persistedAttemptReader)
-	if !ok || pathRunID == 0 {
-		return ""
-	}
-	stepRow, attempt, err := reader.LatestStepAttempt(context.Background(), pathRunID)
-	if err != nil {
-		return ""
-	}
-	if stepRow.StepNo >= currentStepNo {
-		return ""
-	}
-	facts, decoded := DecodeInstanceFacts(attempt.BeforeFacts)
-	if !decoded {
-		return ""
-	}
-	return strings.TrimSpace(facts.FormDataVerifyIssue)
 }
 
 // loadPersistedBusinessSave 读取同一步最近一次落账尝试里已经成功的业务保存 id。
@@ -534,8 +495,7 @@ type StepPreview struct {
 	FormWithheld []string
 	// FormBaseFromInstance 表示表单数据基线来自目标实例当前数据（F-035 协议摘要用）。
 	FormBaseFromInstance bool
-	// FormDataDecision 是本步表单数据的完整节点决策（F-035/T05）；控制现场在放行后
-	// 把它带进 RunContext.LastFormDataDecision，供下一节点跨节点核对。
+	// FormDataDecision 仅记录本步载荷与字段权限，不作为跨节点业务不变性门禁。
 	FormDataDecision *NodeFormDataDecision
 	// request 是构造载荷的那份类型化请求本体；发送时直接使用它，保证预览与实际发出严格同源。
 	request any

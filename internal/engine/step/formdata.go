@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 	"test-auto-pro-v2/internal/adapter/target"
@@ -65,7 +64,7 @@ type FormDataPlan struct {
 	BaseFromInstance bool
 	// BaseEmptyInstance 表示实例存在但表单数据为空（空基线，不是发起态历史配置）。
 	BaseEmptyInstance bool
-	// Decision 是本次构造的完整节点决策记录（F-035/T05）：落日志与写后核对都消费它。
+	// Decision 是本次构造的完整节点决策记录（F-035/T05）：仅用于载荷和权限诊断。
 	Decision *NodeFormDataDecision
 }
 
@@ -83,22 +82,14 @@ type NodeFormDataDecision struct {
 	EditableFields []string `json:"editableFields"`
 	// OverlaidFields 是本次用配置值覆盖的字段。
 	OverlaidFields []string `json:"overlaidFields"`
-	// OverlaidValues 是本次实际写入的字段值（F-035 评审补充）：写后核对与跨节点核对
-	// 深度比较用，字段名存在但值被改写同样算丢失。
-	OverlaidValues map[string]any `json:"overlaidValues,omitempty"`
-	// BaseValues 是本次构造时的完整基线快照（发起态或实例当前数据）：
-	// 写后逐字段核对"上游字段保持原值"以它为准。
-	BaseValues map[string]any `json:"baseValues,omitempty"`
 	// PreservedFields 是基线中保留未动的字段（上一节点/目标已填值）。
 	PreservedFields []string `json:"preservedFields"`
 	// WithheldFields 是禁止进入本次载荷的后续节点专属/权限外配置字段。
 	WithheldFields []string `json:"withheldFields"`
-	// FinalPayload 是最终提交的表单数据 JSON（供指纹与写后逐字段核对）。
+	// FinalPayload 是最终提交的表单数据 JSON（供日志和指纹追溯）。
 	FinalPayload json.RawMessage `json:"finalPayload"`
 	// PayloadFingerprint 是最终表单数据 JSON 的 SHA-256 指纹（hex），可稳定比对版本。
 	PayloadFingerprint string `json:"payloadFingerprint"`
-	// ValidationIssues 是构造期校验问题；非空表示本次写请求必须阻塞。
-	ValidationIssues []string `json:"validationIssues,omitempty"`
 }
 
 // decisionFingerprint 计算最终载荷的稳定指纹；空载荷按空串处理。
@@ -113,7 +104,7 @@ func decisionFingerprint(payload json.RawMessage) string {
 // stripSystemStructuralFields 从表单载荷中剔除目标流程引擎自管的结构性标识字段（如 flowInstanceId）。
 // 为什么必须剔除：实例自身 ID 由请求协议顶层 instanceId/实例上下文承担，绝不能作为业务表单字段
 // 从历史 formData 透传；目标会按实例自身重写/规范化这些键，回读缺失时若参与业务写后核对会被误判成
-// 「业务字段丢失」而阻塞整条路径。构造、普通写后核对与 runtime 正文保护共用 target 侧同一判定入口。
+// 「业务字段丢失」而阻塞整条路径。载荷构造共用 target 侧同一判定入口，不建立字段不变性例外。
 func stripSystemStructuralFields(values map[string]any) {
 	for key := range values {
 		if target.IsSystemStructuralField(key) {
@@ -127,9 +118,8 @@ func stripSystemStructuralFields(values map[string]any) {
 // 后者必须以空对象为基线走实例分支，绝不能退回发起分支把整份历史配置当载荷——
 // 那正是本函数要根治的"历史快照覆盖上游已填内容"（评审 P2：读空静默换基线）。
 // instanceCurrent 已由适配层以 json.Number 解码，重新编码不会改写数字字面量。
-// previous 决策非空时执行跨节点核对：上一节点覆盖字段必须仍在实例基线里，
-// 丢失或被改写一律阻塞（ValidationIssues 非空，写请求禁止发出）。
-func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, instanceCurrent map[string]any, hasInstance bool, previous *NodeFormDataDecision) (FormDataPlan, error) {
+// 目标当前数据为权威；不要求上一节点字段继续存在或保持旧值，原生联动和校验决定业务合法性。
+func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, instanceCurrent map[string]any, hasInstance bool) (FormDataPlan, error) {
 	configured, err := decodeConfiguredFormData(runCtx.EffectiveFormData)
 	if err != nil {
 		return FormDataPlan{}, err
@@ -161,7 +151,6 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 		} else {
 			decision.BaselineSource = "instance"
 		}
-		overlaidValues := map[string]any{}
 		for key, value := range configured {
 			if target.IsSystemStructuralField(key) {
 				// 系统结构性字段不作为业务表单字段：既不覆盖也不保留，实例 ID 由顶层协议承担。
@@ -173,7 +162,6 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 					merged[key] = emptyDerivedValue(key)
 					plan.Overlaid = append(plan.Overlaid, key)
 					decision.OverlaidFields = append(decision.OverlaidFields, key)
-					overlaidValues[key] = emptyDerivedValue(key)
 				}
 				continue
 			}
@@ -181,14 +169,12 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 				merged[key] = value
 				plan.Overlaid = append(plan.Overlaid, key)
 				decision.OverlaidFields = append(decision.OverlaidFields, key)
-				overlaidValues[key] = value
 				continue
 			}
 			if _, exists := merged[key]; !exists && !ownedByOtherNodeOnly(runCtx, compiled.NodeKey, key) {
 				merged[key] = value
 				plan.Overlaid = append(plan.Overlaid, key)
 				decision.OverlaidFields = append(decision.OverlaidFields, key)
-				overlaidValues[key] = value
 				continue
 			}
 			plan.Withheld = append(plan.Withheld, key)
@@ -198,58 +184,7 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 			// 重发起沿目标页面的 edit/reSubmit 语义发送整份当前表单，但审核意见必须显式清空。
 			// 以实例和当前配置中出现过的任一伴生键为触发，清空同序号已存在的完整意见结构，
 			// 避免只清文本而把对象/列表残留带回目标；不凭空创建实例从未返回的字段。
-			resetDerivedFields(merged, configured, &plan.Overlaid, &decision.OverlaidFields, overlaidValues)
-		}
-		decision.OverlaidValues = overlaidValues
-		decision.BaseValues = cloneForDecision(merged)
-		if previous != nil && decision.BaselineSource == "instance" {
-			for _, field := range previous.OverlaidFields {
-				if target.IsTargetContextField(field) {
-					// 目标页面会在每个写动作前按当前登录会话覆盖身份上下文；节点处理人变化导致
-					// currentDepName 等字段不同是目标语义，不是上一节点业务值被改写。
-					continue
-				}
-				if target.IsTargetDerivedField(field) {
-					if compiled.Action == model.ActionResubmit {
-						// 重发起清空审核意见是本动作的业务语义，不应被上一节点的“禁止工具清空”规则拦截。
-						continue
-					}
-					current, exists := merged[field]
-					if !exists {
-						if written, ok := previous.OverlaidValues[field]; ok && !target.IsEmptyDerivedValue(written) {
-							decision.ValidationIssues = append(decision.ValidationIssues,
-								fmt.Sprintf("目标已有非空审批意见 %s 从实例中删除；若工具请求删除该值则阻塞", field))
-						}
-						continue
-					}
-					if written, ok := previous.OverlaidValues[field]; ok && target.DerivedFieldClearedByTool(written, current) {
-						decision.ValidationIssues = append(decision.ValidationIssues,
-							fmt.Sprintf("目标已有非空审批意见 %s 被工具写空，已阻塞", field))
-					}
-					continue
-				}
-				if fieldpower.Covers(editable, field) {
-					continue
-				}
-				// 人员选择组件伴生字段（__condition、__formPersonId、__virtualName 后缀）
-				// 在节点流转后不一定出现在下一节点的表单视图里（目标平台按节点字段权限返回），
-				// 字段"消失"是目标平台的正常行为而不是真正的数据丢失，不能阻断运行。
-				if target.IsPersonPickerCompanionField(field) {
-					continue
-				}
-				current, exists := merged[field]
-				if !exists {
-					decision.ValidationIssues = append(decision.ValidationIssues,
-						fmt.Sprintf("上一节点写入的字段 %s 在目标实例当前数据中丢失，不能继续提交", field))
-					continue
-				}
-				if written, ok := previous.OverlaidValues[field]; ok {
-					if !deepEqualNormalized(written, current) {
-						decision.ValidationIssues = append(decision.ValidationIssues,
-							fmt.Sprintf("上一节点写入的字段 %s 的值在目标实例上被改写（期望 %v，实际 %v），不能继续提交", field, written, current))
-					}
-				}
-			}
+			resetDerivedFields(merged, configured, &plan.Overlaid, &decision.OverlaidFields)
 		}
 		// 保留字段清单：基线里存在且本次未覆盖的键。
 		for key := range merged {
@@ -312,7 +247,7 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 // resetDerivedFields 清空重新发起涉及的审核意见衍生字段；只处理实例或当前配置实际出现的键，避免凭空扩展表单结构。
 // 同一序号的文本、对象、列表字段按现有伴生键成组清空，并统一登记为本步实际覆盖字段，
 // 这样 Go 写路径与 runtime 页面补丁都会把“重置意见”作为显式变更发送出去。
-func resetDerivedFields(merged, configured map[string]any, overlaidFields, decisionFields *[]string, overlaidValues map[string]any) {
+func resetDerivedFields(merged, configured map[string]any, overlaidFields, decisionFields *[]string) {
 	keys := map[string]bool{}
 	collect := func(values map[string]any) {
 		for key := range values {
@@ -335,7 +270,6 @@ func resetDerivedFields(merged, configured map[string]any, overlaidFields, decis
 	for key := range keys {
 		value := emptyDerivedValue(key)
 		merged[key] = value
-		overlaidValues[key] = value
 		if !containsString(*overlaidFields, key) {
 			*overlaidFields = append(*overlaidFields, key)
 		}
@@ -371,62 +305,6 @@ func ActionCarriesFormData(action model.ActionKey) bool {
 	default:
 		return false
 	}
-}
-
-// cloneForDecision 为决策记录做基线深拷贝（避免后续修改污染记录）。
-func cloneForDecision(source map[string]any) map[string]any {
-	if source == nil {
-		return nil
-	}
-	encoded, err := json.Marshal(source)
-	if err != nil {
-		return nil
-	}
-	var cloned map[string]any
-	if err := json.Unmarshal(encoded, &cloned); err != nil {
-		return nil
-	}
-	return cloned
-}
-
-// DeepEqualNormalized 把两个值按 JSON 序列化后比较（json.Number 原样保留），
-// 覆盖嵌套对象、数组与表格字段；字符串比较不做排序扰动，键序差异由 map 序列化的确定性吸收。
-// 对于人员/部门/公司等选择器字段，目标平台可能只落盘 {"id":...} 省略冗余 name，此处容纳等价 ID 比较。
-func DeepEqualNormalized(a, b any) bool {
-	return deepEqualNormalized(a, b)
-}
-
-func deepEqualNormalized(a, b any) bool {
-	encodedA, errA := json.Marshal(a)
-	encodedB, errB := json.Marshal(b)
-	if errA != nil || errB != nil {
-		return fmt.Sprint(a) == fmt.Sprint(b)
-	}
-	if string(encodedA) == string(encodedB) {
-		return true
-	}
-	// 选择器 JSON 字符串等价容差：当两端均为合法的选择器 JSON 时，若 id 相等且非空，
-	// 若两端均提供了非空的 name 则 name 必须相等；若任一端省略 name 或 name 为空串（目标瘦对象/只返回 id 场景），
-	// 只要核心标识 id 一致即视为等价，不产生未保存误报。
-	strA, isStrA := a.(string)
-	strB, isStrB := b.(string)
-	if isStrA && isStrB {
-		var objA, objB map[string]any
-		if json.Unmarshal([]byte(strA), &objA) == nil && json.Unmarshal([]byte(strB), &objB) == nil {
-			idA, hasIdA := objA["id"].(string)
-			idB, hasIdB := objB["id"].(string)
-			if hasIdA && hasIdB && idA != "" && idA == idB {
-				nameA, hasNameA := objA["name"].(string)
-				nameB, hasNameB := objB["name"].(string)
-				trimmedNameA := strings.TrimSpace(nameA)
-				trimmedNameB := strings.TrimSpace(nameB)
-				if (!hasNameA || trimmedNameA == "") || (!hasNameB || trimmedNameB == "") || trimmedNameA == trimmedNameB {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }
 
 // emptyDerivedValue 按目标衍生字段种类返回空形状：文本空串、对象空 map、列表空数组。

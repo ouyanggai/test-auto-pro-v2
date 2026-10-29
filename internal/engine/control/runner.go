@@ -117,7 +117,7 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 				RunID: runID, PathRunID: &pathRunID,
 				Kind: "path_deviation_stopped", Label: "路径偏离，已自动停止：" + deviationReason,
 			}, preview.StepNo)
-			s.applyStop(ctx, pathRunID)
+			s.applyAutomaticStop(ctx, pathRunID, deviationReason)
 			return
 		}
 		// 门禁阻塞表示本步根本不能放行。自动模式没有人工放行，持续阻塞就是走不下去，自动停止到终态；
@@ -132,7 +132,7 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 					RunID: runID, PathRunID: &pathRunID,
 					Kind: "gate_blocked_stopped", Label: "放行条件不满足，已自动停止：" + preview.BlockReason,
 				}, preview.StepNo)
-				s.applyStop(ctx, pathRunID)
+				s.applyAutomaticStop(ctx, pathRunID, preview.BlockReason)
 			}
 			return
 		}
@@ -269,7 +269,17 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 // 状态迁移失败时绝不声称已停止：保留现场与中文原因，让用户能再次停止，
 // 否则路径运行在库里还是运行中，而工具已经把现场清掉，谁都收不了尾。
 func (s *Service) applyStop(ctx context.Context, pathRunID uint64) {
-	if _, err := s.runs.Stop(ctx, pathRunID); err != nil {
+	s.finishStop(ctx, pathRunID, model.RunControlSourceUI, "用户停止运行，已发生的事实全部保留", "")
+}
+
+// applyAutomaticStop 保留自动停止的真实来源与原因，不能把门禁或路径偏离写成用户停止。
+func (s *Service) applyAutomaticStop(ctx context.Context, pathRunID uint64, reason string) {
+	s.finishStop(ctx, pathRunID, model.RunControlSourceSystem, "系统自动停止运行，已发生的事实全部保留", reason)
+}
+
+// finishStop 共用事务收尾与现场清理；落库失败必须保留现场，禁止声称已经停止。
+func (s *Service) finishStop(ctx context.Context, pathRunID uint64, source model.RunControlSource, label, reason string) {
+	if _, err := s.runs.Finish(ctx, pathRunID, model.PathRunStatusStopped, nil, nil, label, reason); err != nil {
 		s.mu.Lock()
 		if session := s.active[pathRunID]; session != nil {
 			session.stopRequested = false
@@ -289,7 +299,7 @@ func (s *Service) applyStop(ctx context.Context, pathRunID uint64) {
 			return 0
 		}(),
 		PathRunID: pathRunID, Kind: model.ControlFactStopped,
-		Source: model.RunControlSourceUI, CreatedAt: s.now(),
+		Source: source, Reason: reason, CreatedAt: s.now(),
 	}
 	if err := s.store.AppendRunControl(ctx, stoppedFact, s.now()); err == nil {
 		s.logFact(pathRunID, stoppedFact, 0)

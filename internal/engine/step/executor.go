@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -388,7 +387,7 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		}
 		return true
 	}
-	result = e.protectRuntimeFormBody(ctx, runCtx, step, session, result, log, approved.Attempt)
+	result = e.captureRuntimeFormSnapshot(ctx, runCtx, step, session, result, log, approved.Attempt)
 	preview.runtimeHandled = true
 	e.rememberRuntimeFacts(preview, result)
 	preview.writeResponse = target.WriteResponse{StatusCode: 200, IsSuccessPresent: true, IsSuccess: result.Status == "success"}
@@ -490,146 +489,28 @@ func stringSliceParameter(parameters map[string]any, key string) []string {
 	return result
 }
 
-// protectRuntimeFormBody 用目标写后回读补齐正文证据，并在字段数明显减少时改判业务失败。
-// 页面快照只证明写前装载完整；写后事实必须以 Go 重新读取目标实例为准。
-func (e *Executor) protectRuntimeFormBody(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, result runtimeexec.ActionRunResult, log *StepLog, attempt int) runtimeexec.ActionRunResult {
-	if result.Status != "success" {
-		return result
-	}
-	switch step.Action {
-	case model.ActionStorageFormData, model.ActionApprove, model.ActionReject:
-	default:
-		return result
-	}
-	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
-	if instanceID == "" {
-		return result
-	}
-	current, err := e.target.ReadInstanceCurrentData(ctx, session, instanceID)
-	if err != nil {
-		result.Status = "business_failed"
-		result.Message = "runtime 表单正文写后回读失败，无法证明写后正文完整：" + err.Error()
-		log.Phase("verify", step.Sequence, attempt, result.Message)
+// captureRuntimeFormSnapshot 保留目标写后原始正文用于诊断，不按字段数量或历史值改判业务结果。
+// 读取失败独立记录为技术错误；动作是否生效仍由节点和待办事实核验，绝不因此重发写请求。
+func (e *Executor) captureRuntimeFormSnapshot(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, result runtimeexec.ActionRunResult, log *StepLog, attempt int) runtimeexec.ActionRunResult {
+	if result.Status != "success" || !ActionCarriesFormData(step.Action) || strings.TrimSpace(runCtx.PathRun.MainInstanceRef) == "" {
 		return result
 	}
 	summary := map[string]any{}
 	if len(result.BusinessSummary) > 0 {
 		_ = json.Unmarshal(result.BusinessSummary, &summary)
 	}
-	beforeMap, _ := summary["formBefore"].(map[string]any)
-	beforeClean := businessFormKeys(beforeMap)
-	afterClean := businessFormKeys(current)
-
-	before := len(beforeClean)
-	if before == 0 {
-		before = runtimeSummaryFieldCount(summary["fieldCountBefore"])
+	current, err := e.target.ReadInstanceCurrentData(ctx, session, runCtx.PathRun.MainInstanceRef)
+	if err != nil {
+		summary["formReadError"] = err.Error()
+		log.Phase("verify", step.Sequence, attempt, "写后表单快照读取失败："+err.Error())
+	} else {
+		summary["formAfter"] = current
+		summary["fieldCountAfter"] = len(current)
 	}
-	after := len(afterClean)
-	summary["formAfter"] = current
-	summary["fieldCountAfter"] = after
-	if encoded, encodeErr := json.Marshal(summary); encodeErr == nil {
+	if encoded, err := json.Marshal(summary); err == nil {
 		result.BusinessSummary = encoded
 	}
-	// 表单正文保护：防止写动作意外清空整个表单正文（如整表被空对象覆盖）。
-	// 为什么这样处理：
-	// 浏览器页面中可能携带空字符串键（如未命名容器绑定的 "" 属性），而在服务端持久化时这些无效空键会被自动剔除；
-	// 若盲目按未清洗的原始数量对比，会因空键过滤（例如写前 41 vs 写后 40）误报字段减少。
-	// 这里通过清洗无效键并双重核对业务字段是否存在，只有在写前确实有字段、写后数量下跌且存在实质性业务字段缺失时才判定为失败。
-	if before > 0 && after < before {
-		missingKeys := missingBusinessFieldNames(beforeClean, afterClean)
-		missing := len(missingKeys)
-		if missing > 0 {
-			result.Status = "business_failed"
-			result.Message = fmt.Sprintf("写后表单正文字段明显减少：写前 %d 个，写后 %d 个，缺失 %d 个业务字段（%s）；已阻止继续执行", before, after, missing, strings.Join(missingKeys, ", "))
-			log.Phase("verify", step.Sequence, attempt, result.Message)
-		}
-	}
 	return result
-}
-
-// cleanFormKeys 过滤掉空字符串等无效字段键，保持有效业务字段的准确统计。
-func cleanFormKeys(data map[string]any) map[string]any {
-	cleaned := make(map[string]any, len(data))
-	for k, v := range data {
-		trimmed := strings.TrimSpace(k)
-		if trimmed == "" {
-			continue
-		}
-		cleaned[trimmed] = v
-	}
-	return cleaned
-}
-
-// businessFormKeys 在 cleanFormKeys 的空键清洗之上，剔除目标引擎自管的系统结构性字段和登录上下文字段。
-// 为什么：runtime 写后回读用它做字段数统计与「缺失业务字段」比较；前者由目标按实例重写，后者由当前会话覆盖，
-// 两者都不代表业务正文丢失，若计入会把正常目标行为误判成正文减少而改判 business_failed。
-func businessFormKeys(data map[string]any) map[string]any {
-	cleaned := cleanFormKeys(data)
-	stripSystemStructuralFields(cleaned)
-	for key := range cleaned {
-		if target.IsTargetContextField(key) {
-			delete(cleaned, key)
-		}
-	}
-	return cleaned
-}
-
-// missingBusinessFieldNames 返回写前存在、写后缺失的业务字段名，并按稳定顺序排序。
-// 具体字段名进入阻塞消息，便于直接定位目标接口或节点权限造成的正文丢失。
-func missingBusinessFieldNames(before, after map[string]any) []string {
-	missing := make([]string, 0)
-	for key := range before {
-		if _, ok := after[key]; ok {
-			continue
-		}
-		// 人员选择组件的伴生字段由目标页面维护。目标在节点流转后可能只清洗
-		// __formPersonId / __condition / __virtualName，但仍保留主人员字段；此时业务值没有丢失。
-		// 只有主字段也缺失时才继续按正文丢失阻塞，避免吞掉真正的人员数据损坏。
-		if primary, ok := personPickerPrimaryField(key); ok {
-			if _, primaryExists := after[primary]; primaryExists {
-				continue
-			}
-		}
-		missing = append(missing, key)
-	}
-	sort.Strings(missing)
-	return missing
-}
-
-// personPickerPrimaryField 返回人员选择伴生字段对应的主字段名。
-// 非伴生字段或去掉后缀后主字段为空时返回 false，避免把普通业务字段误归类。
-func personPickerPrimaryField(field string) (string, bool) {
-	if !target.IsPersonPickerCompanionField(field) {
-		return "", false
-	}
-	key := strings.TrimSpace(field)
-	for _, suffix := range []string{"__condition", "__formPersonId", "__virtualName"} {
-		if strings.HasSuffix(key, suffix) {
-			primary := strings.TrimSpace(strings.TrimSuffix(key, suffix))
-			return primary, primary != ""
-		}
-	}
-	return "", false
-}
-
-// runtimeSummaryFieldCount 把 JSON 解码后的字段数收敛为非负整数。
-func runtimeSummaryFieldCount(value any) int {
-	switch typed := value.(type) {
-	case float64:
-		if typed > 0 {
-			return int(typed)
-		}
-	case json.Number:
-		parsed, _ := typed.Int64()
-		if parsed > 0 {
-			return int(parsed)
-		}
-	case int:
-		if typed > 0 {
-			return typed
-		}
-	}
-	return 0
 }
 
 // ShouldRunViaRuntimeForTest 暴露路由判定，供契约测试锁定「哪些动作走 runtime」。
@@ -717,9 +598,9 @@ func (e *Executor) RunViaRuntimeForTest(ctx context.Context, runCtx RunContext, 
 	return e.runViaRuntime(ctx, runCtx, step, session, preview, nil, approved)
 }
 
-// ProtectRuntimeFormBodyForTest 暴露 runtime 写后正文保护，供回归用例锁定系统结构性字段不被计入业务字段丢失。
-func (e *Executor) ProtectRuntimeFormBodyForTest(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, result runtimeexec.ActionRunResult, attempt int) runtimeexec.ActionRunResult {
-	return e.protectRuntimeFormBody(ctx, runCtx, step, session, result, nil, attempt)
+// CaptureRuntimeFormSnapshotForTest 暴露写后快照采集，供根目录回归核对证据保留且不引入字段不变性判断。
+func (e *Executor) CaptureRuntimeFormSnapshotForTest(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, result runtimeexec.ActionRunResult, attempt int) runtimeexec.ActionRunResult {
+	return e.captureRuntimeFormSnapshot(ctx, runCtx, step, session, result, nil, attempt)
 }
 
 func (e *Executor) SetLogFactory(factory LogFactory) {
@@ -929,14 +810,6 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		if actorName == runCtx.PlanAccount && assigneeID != "" {
 			actorName = assigneeID
 		}
-	}
-	if persisted := loadPersistedFormDataVerifyIssue(e.facts, runCtx.PathRun.ID, step.Sequence); persisted != "" {
-		facts.FormDataVerifyIssue = persisted
-	}
-	if strings.TrimSpace(facts.FormDataVerifyIssue) != "" {
-		reason := "上一步表单核对未通过：" + facts.FormDataVerifyIssue + "；已阻塞本步，请先到对应步骤和日志核对目标实例当前表单"
-		log.Phase("gate", step.Sequence, 1, reason)
-		return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
 	}
 	info := runCtx.Nodes[step.NodeKey]
 	// 取回动作若紧跟一个已被目标自动跳过的准备同意，目标从未为该节点生成已办审核记录，
@@ -1303,10 +1176,7 @@ func (e *Executor) nodeFormData(ctx context.Context, runCtx RunContext, compiled
 			}
 		}
 	}
-	plan, err := BuildNodeFormData(runCtx, compiled, current, hasInstance, runCtx.LastFormDataDecision)
-	if err == nil && plan.Decision != nil && len(plan.Decision.ValidationIssues) > 0 {
-		return plan, session, fmt.Errorf("%s", strings.Join(plan.Decision.ValidationIssues, "；"))
-	}
+	plan, err := BuildNodeFormData(runCtx, compiled, current, hasInstance)
 	if err != nil {
 		return plan, session, err
 	}
@@ -1446,93 +1316,6 @@ func branchAuditTypes(runCtx RunContext) map[string]string {
 // 真实目标客户端实现它；测试假件不必实现，缺省时发起/审批阻塞而不是用历史身份冒充。
 type runtimeIdentityReader interface {
 	CurrentUserIdentity(ctx context.Context, active target.Session) (target.UserIdentity, error)
-}
-
-// verifyFormDataAfterWrite 在写请求成功后重读目标实例当前表单，并按字段所有权核对。
-func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunContext, session target.Session, decision *NodeFormDataDecision, log *StepLog) string {
-	instanceRef := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
-	if instanceRef == "" {
-		return ""
-	}
-	current, err := e.target.ReadInstanceCurrentData(ctx, session, instanceRef)
-	if err != nil {
-		return ""
-	}
-	issues := []string{}
-	overlaidSet := map[string]bool{}
-	for _, field := range decision.OverlaidFields {
-		overlaidSet[field] = true
-		// 系统结构性字段（如 flowInstanceId 实例自身 ID）由目标引擎管理，读回可能缺失或被规范化，
-		// 不纳入业务写后核对，避免把「实例自身 ID 未原样回显」误判成写入丢失而阻塞整条路径。
-		if target.IsSystemStructuralField(field) {
-			continue
-		}
-		if target.IsTargetContextField(field) {
-			// 目标会按当前登录会话重写身份上下文，节点间变化不属于业务正文丢失。
-			continue
-		}
-		// 人员选择组件伴生字段（__condition、__formPersonId、__virtualName 后缀）在节点流转后
-		// 不一定出现在下一节点的表单视图里，不能以"字段未出现"来判断保存失败。
-		if target.IsPersonPickerCompanionField(field) {
-			continue
-		}
-		written, hasWritten := decision.OverlaidValues[field]
-		if !hasWritten {
-			continue
-		}
-		ownership := target.ClassifyFormField(field, true, false)
-		actual, exists := current[field]
-		if ownership.Ownership == target.FieldOwnershipTargetDerived {
-			// 目标可能在清空后省略空的伴生键；重发起只要回读不到非空意见即可视为已重置。
-			if decision.Action == string(model.ActionResubmit) && exists && !target.IsEmptyDerivedValue(actual) {
-				issues = append(issues, fmt.Sprintf("重新发起应清空审核意见字段 %s，但目标仍为 %v", field, actual))
-			}
-			continue
-		}
-		if !exists {
-			issues = append(issues, fmt.Sprintf("字段 %s 发送后未出现在目标实例数据中", field))
-			continue
-		}
-		if !deepEqualNormalized(written, actual) {
-			issues = append(issues, fmt.Sprintf("字段 %s 发送的值未被目标保存（发送 %v，目标 %v）", field, written, actual))
-		}
-	}
-	for field, baseValue := range decision.BaseValues {
-		if overlaidSet[field] || containsString(decision.WithheldFields, field) {
-			continue
-		}
-		if target.IsSystemStructuralField(field) {
-			continue
-		}
-		if target.IsTargetContextField(field) {
-			// 当前处理人、部门和公司字段由目标会话维护，不做上游业务值保留核对。
-			continue
-		}
-		// 人员选择组件伴生字段在节点流转后不在下一节点的表单视图里，不做跨节点保留核对。
-		if target.IsPersonPickerCompanionField(field) {
-			continue
-		}
-		ownership := target.ClassifyFormField(field, false, false)
-		actual, exists := current[field]
-		if ownership.Ownership == target.FieldOwnershipTargetDerived {
-			continue
-		}
-		if !exists {
-			issues = append(issues, fmt.Sprintf("上游业务字段 %s 从目标实例中删除，不能继续", field))
-			continue
-		}
-		if !deepEqualNormalized(baseValue, actual) {
-			issues = append(issues, fmt.Sprintf("上游字段 %s 的值在本次写后被改写（写前 %v，目标 %v）", field, baseValue, actual))
-		}
-	}
-	if len(issues) == 0 {
-		log.Phase("verify", decision.StepNo, 1, fmt.Sprintf("表单数据写后核对通过：覆盖 %d 个字段均已保存，基线保留字段未被改写（指纹 %s）",
-			len(decision.OverlaidFields), decision.PayloadFingerprint))
-		return ""
-	}
-	message := "表单数据写后核对不一致：" + strings.Join(issues, "；")
-	log.Phase("verify", decision.StepNo, 1, message)
-	return message
 }
 
 // pollForHandlerGeneration 对"目标节点已到达但处理人/待办尚未生成"的场景执行有界轮询（F-035/T07）：
@@ -2210,17 +1993,6 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	before.StepNodeKey = stepTargetNodeID
 	after, session, readErr := e.readFactsWithRetry(ctx, runCtx, session, step)
 	after.StepNodeKey = stepTargetNodeID
-	// F-035 评审补充：写后表单数据逐字段核对——本次发送的覆盖字段必须已保存成目标值，
-	// 基线里保留的上游字段必须保持原值。这不是目标表单校验（用户已豁免），
-	// 而是工具自己的写副作用事实核对；核对结论随核验事实落账，供下一步门禁阻塞使用。
-	if readErr == nil && strings.TrimSpace(after.ReadError) == "" && preview.FormDataDecision != nil && ActionCarriesFormData(step.Action) {
-		if issue := e.verifyFormDataAfterWrite(ctx, runCtx, session, preview.FormDataDecision, log); issue != "" {
-			after.FormDataVerifyIssue = issue
-			after.FormDataVerifyResults = []string{issue}
-		}
-		after.FormDataVerifyAt = e.now().UTC().Format(time.RFC3339)
-		after.FormDataVerifyFingerprint = preview.FormDataDecision.PayloadFingerprint
-	}
 	if readErr == nil && strings.TrimSpace(after.ReadError) == "" {
 		// 核验重读同时把实例名称补进日志作用域与 meta.json；写后屏障之后的新事实优先。
 		ctx = e.annotateInstanceFromFacts(ctx, runCtx, log, after)
@@ -2371,9 +2143,8 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		LogLine:     lineNo,
 		DurationMs:  durationMs,
 		IsReplay:    approved.IsReplay,
-		// BeforeFacts 复用现有 JSON 列同时携带写后核对结论：不新增表。
-		// 下一步按 pathRunId 读取最近尝试，重启后仍能恢复阻塞结论。
-		BeforeFacts: EncodeInstanceFacts(mergeVerifyIssue(before, after)),
+		// BeforeFacts 复用现有 JSON 列保留写前基准及真实写后节点、代理、业务保存事实，供对账恢复。
+		BeforeFacts: EncodeInstanceFacts(mergeAfterFacts(before, after)),
 		// runtime 三阶段投影与请求轨迹随尝试行落库（评审 P1-7）：详情接口据此展示
 		// runtime 三阶段、请求轨迹与业务失败状态；非 runtime 步骤为空。
 		RuntimeDetail: preview.runtimeDetailJSON,

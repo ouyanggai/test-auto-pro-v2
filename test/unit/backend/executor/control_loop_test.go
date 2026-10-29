@@ -400,6 +400,16 @@ func TestF016StopControl(t *testing.T) {
 		"SELECT COUNT(*) FROM run_controls WHERE path_run_id = ? AND kind IN ('stop_requested','stopped')", started.PathRun.ID).Scan(&controlCount); err != nil || controlCount != 2 {
 		t.Fatalf("停止应有两行控制事实：count=%d err=%v", controlCount, err)
 	}
+	var finalLabel, source string
+	if err := database.DB.QueryRowContext(ctx, "SELECT label FROM run_events WHERE path_run_id=? AND kind='path_run_finished' ORDER BY id DESC LIMIT 1", started.PathRun.ID).Scan(&finalLabel); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.DB.QueryRowContext(ctx, "SELECT source FROM run_controls WHERE path_run_id=? AND kind='stopped' ORDER BY id DESC LIMIT 1", started.PathRun.ID).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if finalLabel != "用户停止运行，已发生的事实全部保留" || source != "ui" {
+		t.Fatalf("真实用户停止文案与来源改变：%s / %s", finalLabel, source)
+	}
 	if _, err := controller.Stop(ctx, started.PathRun.ID); !errors.Is(err, control.ErrRunAlreadyFinished) {
 		t.Fatalf("终态不可再停止，实际 err=%v", err)
 	}
@@ -490,5 +500,51 @@ func TestRetrievePrepareConsentDoesNotEnterCountersignLoop(t *testing.T) {
 	}
 	if stepCount != 1 {
 		t.Fatalf("第 2 步在数据库中应只有 1 次落账，实际有 %d 次落账（杜绝多重跳过死循环）", stepCount)
+	}
+}
+
+// TestF052AutomaticGateStopUsesSystemSource 验证自动门禁停止的事务事件与控制事实保留系统来源和真实原因，且没有任何目标写请求。
+func TestF052AutomaticGateStopUsesSystemSource(t *testing.T) {
+	database := newF016ControlDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := planmysql.NewRunRepository(database.DB)
+	runService := run.NewService(store, "worker-f052-stop", time.Minute, time.Now)
+	fake := &fakeTarget{}
+	executor := step.NewExecutor(fake, &fakeSessions{}, runService, store, fixedRunConfig(), nil)
+	controller := control.NewService(runService, executor, store, time.Now)
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep()})
+	runCtx.EffectiveFormData = []byte(`{invalid`)
+	started, err := controller.StartWithMode(ctx, runCtx, model.RunModeAuto, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var path model.PathRun
+	for time.Now().Before(deadline) {
+		path, err = store.GetPathRun(ctx, started.PathRun.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if path.Status == model.PathRunStatusStopped && controller.View(path.ID) == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if path.Status != model.PathRunStatusStopped {
+		t.Fatalf("自动门禁应停止：%s", path.Status)
+	}
+	var label, detail, source, reason string
+	if err := database.DB.QueryRowContext(ctx, "SELECT label,detail FROM run_events WHERE path_run_id=? AND kind='path_run_finished' ORDER BY id DESC LIMIT 1", path.ID).Scan(&label, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.DB.QueryRowContext(ctx, "SELECT source,reason FROM run_controls WHERE path_run_id=? AND kind='stopped' ORDER BY id DESC LIMIT 1", path.ID).Scan(&source, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if label != "系统自动停止运行，已发生的事实全部保留" || source != "system" || detail == "" || detail != reason {
+		t.Fatalf("自动停止不得冒充用户，且原因必须完整：%s / %s / %s / %s", label, detail, source, reason)
+	}
+	if fake.submitCalls != 0 || fake.auditCalls != 0 {
+		t.Fatal("门禁失败不能发送写请求")
 	}
 }
