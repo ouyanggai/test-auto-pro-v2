@@ -78,7 +78,7 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, runtimeCont
   const editableFields = new Set()
 	const hiddenFields = new Set()
 	const requiredEditableFields = new Set()
-  const visit = (list) => {
+  const visit = (list, tableScope = null) => {
     for (const component of Array.isArray(list) ? list : []) {
       const type = String(component && component.type || '').trim()
       const model = String(component && component.model || '').trim()
@@ -98,17 +98,22 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, runtimeCont
       }
       if (model) {
         // 目标页面先禁用整张表单，再只开放流程节点明确授权的字段；缺少权限不能默认可编辑。
-		const field = normalizeFieldPath(model)
-		const power = permissionByField.get(field) || 'only_read'
+		const field = tableScope ? `${tableScope.field}.${normalizeFieldPath(model)}` : normalizeFieldPath(model)
+        // 子表列不是顶层字段：父表授权后保留模板列状态，只有完整路径权限才覆盖该列。
+        // 父表只读/隐藏不能被子列 edit 放宽，同名顶层字段也不能串用到表格列。
+        const explicitPower = permissionByField.get(field)
+		const power = tableScope ? (tableScope.power === 'edit' ? explicitPower || 'edit' : tableScope.power) : explicitPower || 'only_read'
 		allFields.add(field)
-			if (!readOnly && power === 'edit') editableFields.add(field)
 			// _flow 也用于关联流程选择器，不能按字段后缀猜测用途；显隐只服从目标模板、权限及原生联动。
 		const staticallyHidden = power === 'hide' || component.hidden === true || component.options && (component.options.hidden === true || component.options.display === false)
 			if (staticallyHidden) hiddenFields.add(field)
 			component.options = component.options || {}
 			component.options.hidden = staticallyHidden
-			component.options.disabled = readOnly || power !== 'edit'
-			if (component.options.disabled) {
+			component.options.disabled = readOnly || power !== 'edit' || Boolean(tableScope && !explicitPower && component.options.disabled)
+        if (!component.options.disabled) editableFields.add(field)
+        // 对齐目标宿主 setRequireByPermission：_col 只控制列必填，不是列的编辑权限。
+        const columnRequiredAllowed = !tableScope || tableScope.noColumnPermission || permissionByField.get(`${model}_col`) === 'edit'
+			if (component.options.disabled || !columnRequiredAllowed) {
           component.options.required = false
           // 未开放字段必须移除整组运行时校验，目标页面也是先按权限清理规则再 refresh。
 				if (Array.isArray(component.rules)) component.rules = []
@@ -116,7 +121,12 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, runtimeCont
 				requiredEditableFields.add(field)
         }
       }
-      for (const children of componentLists(component)) visit(children)
+      const childScope = type === 'table' && model ? {
+        field: tableScope ? `${tableScope.field}.${normalizeFieldPath(model)}` : normalizeFieldPath(model),
+        power: component.options.disabled ? 'only_read' : 'edit',
+        noColumnPermission: String(component.options.customClass || '').includes('subFormNoNeedPermission')
+      } : tableScope
+      for (const children of componentLists(component)) visit(children, childScope)
     }
   }
   visit(template.list)
