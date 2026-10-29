@@ -102,8 +102,8 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, runtimeCont
 		const power = permissionByField.get(field) || 'only_read'
 		allFields.add(field)
 			if (!readOnly && power === 'edit') editableFields.add(field)
-			// 关联流程回传附件（模型以 _flow 结尾）在配置阶段不可能有内容，与宿主联动终态一致直接隐藏。
-		const staticallyHidden = power === 'hide' || component.hidden === true || (model !== '' && model.endsWith(RELATED_FLOW_ATTACHMENT_SUFFIX)) || component.options && (component.options.hidden === true || component.options.display === false)
+			// _flow 也用于关联流程选择器，不能按字段后缀猜测用途；显隐只服从目标模板、权限及原生联动。
+		const staticallyHidden = power === 'hide' || component.hidden === true || component.options && (component.options.hidden === true || component.options.display === false)
 			if (staticallyHidden) hiddenFields.add(field)
 			component.options = component.options || {}
 			component.options.hidden = staticallyHidden
@@ -295,9 +295,6 @@ export function formValuesFingerprint (values) {
 const OPTION_WIDGET_TYPES = new Set(['select', 'radio', 'checkbox', 'cascader'])
 // 子表单与动态表格是把行数组写进模型值的容器；grid/report/tabs 等只是布局容器，不改变取值路径。
 const VALUE_GROUP_TYPES = new Set(['subform', 'table'])
-// 目标约定：模型以 _flow 结尾的附件组件承载"关联流程回传的文件"。配置阶段子流程不会运行，
-// 这些组件永远不会有内容，按宿主联动终态隐藏并计入隐藏统计，避免误导用户填写。
-const RELATED_FLOW_ATTACHMENT_SUFFIX = '_flow'
 // 目标约定选项型控件绑定 Id 后缀字段，同前缀 Name 字段保存显示名称；这是平台级结构约定而非业务字段名。
 const ID_SUFFIX_PATTERN = /Id$/
 // 多选控件的名称字段可能以数组或分隔符文本保存，逐名解析后按顺序同步完整取值数组。
